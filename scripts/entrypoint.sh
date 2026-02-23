@@ -13,6 +13,7 @@ echo "[Entrypoint] Seeding initial model version..."
 # ModelVersion 레코드가 없으면 생성 (멱등성 보장)
 python manage.py seed_model
 
-echo "[Entrypoint] Starting Django server..."
-# ASGI 서버 실행 (개발환경: runserver, 운영환경은 gunicorn/uvicorn으로 교체)
-exec python manage.py runserver 0.0.0.0:8000
+echo "[Entrypoint] Starting Gunicorn server..."
+# 2 workers: t3.large 2 vCPU 기준 (권장: 2 * CPU + 1)
+# --bind 0.0.0.0:8000: 컨테이너 외부에서 접근 가능하도록
+exec gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 2

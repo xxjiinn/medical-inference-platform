@@ -11,5 +11,6 @@ onnxruntime==1.17.*
 huggingface-hub==0.21.*
 Pillow==10.*
 numpy==1.26.*
+gunicorn==21.*
 pytest==8.*
 pytest-django==4.*

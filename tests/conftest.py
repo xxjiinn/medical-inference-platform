@@ -20,7 +20,7 @@ def django_db_setup(django_test_environment, django_db_blocker):
     """
     세션 전체에서 SQLite 인메모리 DB 사용.
     pytest.ini의 DJANGO_SETTINGS_MODULE = config.test_settings 으로
-    DB가 이미 SQLite로 설정돼 있으므로 여기서는 migrate만 실행.
+    DB가 이미 SQLite로 설정돼 있으므로 여기서는 migrate만 실행!
     scope="session": 모든 테스트가 DB 인스턴스를 공유 (매 테스트마다 재생성 안 함)
     """
     with django_db_blocker.unblock():

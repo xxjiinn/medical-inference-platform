@@ -4,7 +4,8 @@ services:
   api:
     build: .
     container_name: medihub_api
-    command: python manage.py runserver 0.0.0.0:8000
+    # entrypoint.sh: migrate → seed_model → runserver 순서로 실행
+    command: bash scripts/entrypoint.sh
     volumes:
       - .:/app
       - hf_cache:/root/.cache/huggingface
@@ -55,7 +56,7 @@ services:
     image: redis:7-alpine
     container_name: medihub_redis
     ports:
-      - "6379:6379"
+      - "6380:6379"  # 로컬 Redis(6379)와 충돌 방지, 컨테이너 내부는 여전히 6379
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s

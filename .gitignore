@@ -13,3 +13,4 @@ venv/
 mysql_data/
 *.onnx
 models/
+.claude/

@@ -70,10 +70,10 @@ class JobCreateView(APIView):
         # 6. 이미지 bytes를 Redis에 임시 저장 (워커가 추론 시 꺼냄, TTL 10분)
         store_image(sha256, image_bytes)
 
-        # 7. Redis 큐에 job_id 등록 → 워커가 꺼내서 추론 시작
+        # 7. Redis 큐에 job_id 등록 -> 워커가 꺼내서 추론 시작
         enqueue(job.id)
 
-        # 8. SHA256 → job_id 캐시 저장 (이후 동일 이미지 요청 시 빠르게 반환)
+        # 8. SHA256 -> job_id 캐시 저장 (이후 동일 이미지 요청 시 빠르게 반환)
         set_cache(sha256, job.id)
 
         # 9. 생성된 Job 정보 응답 (201 Created)

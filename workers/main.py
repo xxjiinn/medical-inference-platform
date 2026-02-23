@@ -53,7 +53,7 @@ def run_manager():
     shutdown = False
 
     def handle_sigterm(signum, frame):
-        """Docker stop 또는 kill 시 SIGTERM 수신 → 모든 워커 종료 신호 전송."""
+        """Docker stop 또는 kill 시 SIGTERM 수신 -> 모든 워커 종료 신호 전송."""
         nonlocal shutdown
         logger.info("Received SIGTERM. Shutting down all workers...")
         shutdown = True
@@ -76,7 +76,7 @@ def run_manager():
 
         for i, p in enumerate(processes):
             if not p.is_alive():
-                # 워커가 예기치 않게 종료됨 (크래시) → 새 프로세스로 교체
+                # 워커가 예기치 않게 종료됨 (크래시) -> 새 프로세스로 교체
                 logger.warning(
                     f"Worker {i} (PID={p.pid}) is dead (exit code={p.exitcode}). Restarting..."
                 )

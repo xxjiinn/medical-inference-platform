@@ -31,7 +31,7 @@ def get_redis() -> redis.Redis:
 def enqueue(job_id: int) -> None:
     """
     job_id를 Redis 큐의 왼쪽에 삽입 (LPUSH).
-    워커는 오른쪽에서 꺼냄(BRPOP) → FIFO 큐 구조.
+    워커는 오른쪽에서 꺼냄(BRPOP) -> FIFO 큐 구조.
     Spring의 BlockingQueue.put()과 동일.
     """
     r = get_redis()
@@ -71,7 +71,7 @@ def get_cache(sha256: str) -> int | None:
 
 def set_cache(sha256: str, job_id: int) -> None:
     """
-    SHA256 → job_id 매핑을 Redis에 저장 (TTL = CACHE_TTL초).
+    SHA256 -> job_id 매핑을 Redis에 저장 (TTL = CACHE_TTL초).
     추론이 완료된 job을 캐싱해 동일 이미지 재요청 시 빠르게 반환.
     """
     r = get_redis()
@@ -109,7 +109,7 @@ def collect_batch(max_wait_ms: int = 30, max_size: int = 8) -> list[int]:
     # 1단계: 첫 번째 job 블로킹 대기 (최대 5초)
     result = r_str.brpop(QUEUE_KEY, timeout=5)
     if result is None:
-        return []  # 5초 동안 job 없음 → 빈 배치 반환
+        return []  # 5초 동안 job 없음 -> 빈 배치 반환
 
     _, first_id = result
     job_ids = [int(first_id)]

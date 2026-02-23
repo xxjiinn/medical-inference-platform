@@ -12,3 +12,4 @@ build/
 venv/
 mysql_data/
 *.onnx
+models/

@@ -61,3 +61,13 @@ WORKER_COUNT = int(os.getenv("WORKER_COUNT", 2))       # 추론 워커 프로세
 INFERENCE_TIMEOUT = int(os.getenv("INFERENCE_TIMEOUT", 10))  # 작업당 타임아웃(초)
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", 3))         # 실패 시 최대 재시도 횟수
 BATCH_WINDOW_MS = int(os.getenv("BATCH_WINDOW_MS", 30))  # 마이크로배치 수집 시간(ms)
+
+# 추론 엔진 선택: "pytorch" 또는 "onnx"
+# onnx로 설정 시 convert_to_onnx.py로 변환된 모델 파일이 있어야 함
+INFERENCE_ENGINE = os.getenv("INFERENCE_ENGINE", "pytorch")
+
+# ONNX 모델 파일 경로
+ONNX_MODEL_PATH = os.getenv(
+    "ONNX_MODEL_PATH",
+    os.path.join(BASE_DIR, "models", "densenet121.onnx"),
+)

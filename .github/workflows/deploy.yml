@@ -38,11 +38,12 @@ jobs:
           DJANGO_SETTINGS_MODULE: config.test_settings
           REDIS_HOST: localhost
           REDIS_PORT: 6379
+          SECRET_KEY: "test-secret-key-for-ci"
         run: pytest --tb=short -q
 
   # ── 2. EC2 배포 (main 푸시 시에만) ───────────────────────
   deploy:
-    needs: test               # 테스트 통과 후에만 배포
+    needs: test # 테스트 통과 후에만 배포
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
 

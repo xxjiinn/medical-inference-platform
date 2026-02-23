@@ -35,8 +35,8 @@ def convert():
         dummy_input,            # 입력 shape 정의용 더미 텐서
         OUTPUT_PATH,            # 저장 경로
         export_params=True,     # 가중치(파라미터)도 함께 저장
-        opset_version=17,       # ONNX opset 버전 (높을수록 더 많은 연산 지원)
-        do_constant_folding=True,  # 상수 연산 미리 계산 -> 모델 경량화
+        opset_version=11,       # opset 11 = 가장 안정적인 버전
+        do_constant_folding=False, # True로 설정 시 DenseNet Reshape 노드 오류 발생 -> 비활성화
         input_names=["input"],  # 입력 노드 이름 (ONNX Runtime에서 참조)
         output_names=["output"], # 출력 노드 이름
         dynamic_axes={

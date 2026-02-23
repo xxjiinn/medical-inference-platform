@@ -22,7 +22,7 @@ django.setup()
 
 from django.conf import settings
 from apps.jobs.models import InferenceJob, InferenceResult
-from workers.queue import collect_batch, REDIS_URL
+from workers.redis_queue import collect_batch, REDIS_URL
 
 # INFERENCE_ENGINE 설정에 따라 로더 선택
 # "onnx"면 OnnxLoader, 그 외(기본값 "pytorch")면 ModelLoader 사용
@@ -147,7 +147,7 @@ def _handle_failed_jobs(jobs: list) -> None:
 
     Redis 재시도 카운터 키: retry:{job_id}  (TTL 1시간)
     """
-    from workers.queue import enqueue
+    from workers.redis_queue import enqueue
     r = redis_lib.from_url(REDIS_URL, decode_responses=True)
 
     for job in jobs:

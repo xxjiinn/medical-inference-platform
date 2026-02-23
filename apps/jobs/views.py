@@ -18,7 +18,7 @@ from .serializers import (
     JobStatusSerializer,
     InferenceResultSerializer,
 )
-from workers.queue import enqueue, get_cache, set_cache, store_image
+from workers.redis_queue import enqueue, get_cache, set_cache, store_image
 
 
 class JobCreateView(APIView):

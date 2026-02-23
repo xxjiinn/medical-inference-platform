@@ -32,25 +32,33 @@ def test_metrics_counts_correctly(api_client, model_version):
     now = timezone.now()
 
     # 최근 5분 내 데이터 생성
+    # auto_now_add=True라 create()에서 created_at을 지정할 수 없음.
+    # update()는 auto_now_add를 우회해 직접 값 설정 가능 (Spring의 @Modifying 쿼리와 동일)
     for _ in range(3):
-        InferenceJob.objects.create(
+        job = InferenceJob.objects.create(
             model=model_version,
             status=InferenceJob.Status.COMPLETED,
             input_sha256=f"hash_ok_{_}",
-            created_at=now - timedelta(minutes=2),  # 2분 전 → 집계 대상
         )
-    InferenceJob.objects.create(
+        InferenceJob.objects.filter(pk=job.pk).update(
+            created_at=now - timedelta(minutes=2)  # 2분 전 → 집계 대상
+        )
+    job_fail = InferenceJob.objects.create(
         model=model_version,
         status=InferenceJob.Status.FAILED,
         input_sha256="hash_fail",
-        created_at=now - timedelta(minutes=1),
+    )
+    InferenceJob.objects.filter(pk=job_fail.pk).update(
+        created_at=now - timedelta(minutes=1)
     )
     # 5분 밖 데이터 (집계 제외 대상)
-    InferenceJob.objects.create(
+    job_old = InferenceJob.objects.create(
         model=model_version,
         status=InferenceJob.Status.COMPLETED,
         input_sha256="hash_old",
-        created_at=now - timedelta(minutes=10),  # 10분 전 → 집계 제외
+    )
+    InferenceJob.objects.filter(pk=job_old.pk).update(
+        created_at=now - timedelta(minutes=10)  # 10분 전 → 집계 제외
     )
 
     response = api_client.get("/v1/ops/metrics")
@@ -74,11 +82,14 @@ def test_metrics_latency_calculated(api_client, model_version):
         input_sha256="hash_latency",
     )
     # result.created_at이 job.created_at보다 2초 늦도록 설정
-    InferenceResult.objects.create(
+    # auto_now_add=True 우회: create() 후 update()로 직접 설정
+    result = InferenceResult.objects.create(
         job=job,
         output={"Pneumonia": 0.9},
         top_label="Pneumonia",
-        created_at=job.created_at + timedelta(seconds=2),
+    )
+    InferenceResult.objects.filter(pk=result.pk).update(
+        created_at=job.created_at + timedelta(seconds=2)
     )
 
     response = api_client.get("/v1/ops/metrics")

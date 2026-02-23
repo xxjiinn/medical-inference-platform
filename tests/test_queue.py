@@ -7,7 +7,7 @@ test_queue.py
 from unittest.mock import patch, MagicMock, call
 import pytest
 
-from workers.queue import collect_batch, enqueue, get_cache, set_cache
+from workers.redis_queue import collect_batch, enqueue, get_cache, set_cache
 
 
 def make_mock_redis(brpop_result=None, rpop_side_effect=None):
@@ -29,7 +29,7 @@ def test_collect_batch_empty_queue():
     """큐가 비어있을 때 (BRPOP 타임아웃) 빈 리스트를 반환하는지 검증."""
     mock_r = make_mock_redis(brpop_result=None)  # 타임아웃 시뮬레이션
 
-    with patch("workers.queue.get_redis", return_value=mock_r):
+    with patch("workers.redis_queue.get_redis", return_value=mock_r):
         result = collect_batch(max_wait_ms=10, max_size=4)
 
     assert result == []
@@ -43,7 +43,7 @@ def test_collect_batch_single_job():
         rpop_side_effect=[None],
     )
 
-    with patch("workers.queue.get_redis", return_value=mock_r):
+    with patch("workers.redis_queue.get_redis", return_value=mock_r):
         result = collect_batch(max_wait_ms=10, max_size=4)
 
     assert result == [42]
@@ -57,7 +57,7 @@ def test_collect_batch_multiple_jobs():
         rpop_side_effect=["2", "3", None],  # None: 이후 큐 비어있음
     )
 
-    with patch("workers.queue.get_redis", return_value=mock_r):
+    with patch("workers.redis_queue.get_redis", return_value=mock_r):
         result = collect_batch(max_wait_ms=100, max_size=8)
 
     assert result == [1, 2, 3]
@@ -71,7 +71,7 @@ def test_collect_batch_respects_max_size():
         rpop_side_effect=["2", "3", "4"],  # 3개 더 있지만 max_size=2라 첫 번째만 가져옴
     )
 
-    with patch("workers.queue.get_redis", return_value=mock_r):
+    with patch("workers.redis_queue.get_redis", return_value=mock_r):
         result = collect_batch(max_wait_ms=100, max_size=2)
 
     # 첫 번째 (BRPOP) + 두 번째 (RPOP 1회) = 총 2개
@@ -83,7 +83,7 @@ def test_enqueue_calls_lpush():
     """enqueue()가 Redis LPUSH를 호출하는지 검증."""
     mock_r = MagicMock()
 
-    with patch("workers.queue.get_redis", return_value=mock_r):
+    with patch("workers.redis_queue.get_redis", return_value=mock_r):
         enqueue(99)
 
     # LPUSH("inference:queue", "99") 호출 여부 확인
@@ -95,7 +95,7 @@ def test_get_cache_hit():
     mock_r = MagicMock()
     mock_r.get.return_value = "42"  # 캐시 히트
 
-    with patch("workers.queue.get_redis", return_value=mock_r):
+    with patch("workers.redis_queue.get_redis", return_value=mock_r):
         result = get_cache("abc123")
 
     assert result == 42  # str → int 변환 확인
@@ -106,7 +106,7 @@ def test_get_cache_miss():
     mock_r = MagicMock()
     mock_r.get.return_value = None  # 캐시 미스
 
-    with patch("workers.queue.get_redis", return_value=mock_r):
+    with patch("workers.redis_queue.get_redis", return_value=mock_r):
         result = get_cache("abc123")
 
     assert result is None

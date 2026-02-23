@@ -6,6 +6,7 @@ test_views.py
 """
 
 import hashlib
+import io
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -20,6 +21,10 @@ from apps.jobs.models import InferenceJob, InferenceResult
 def test_create_job_success(api_client, sample_image_bytes, model_version):
     """정상 이미지 업로드 시 job이 생성되고 201을 반환하는지 검증."""
     # Redis 관련 함수 모두 Mock (실제 Redis 없이 테스트)
+    # io.BytesIO에 .name 속성 추가 → DRF multipart가 파일로 인식
+    image = io.BytesIO(sample_image_bytes)
+    image.name = "test.png"
+
     with patch("apps.jobs.views.get_cache", return_value=None), \
          patch("apps.jobs.views.store_image"), \
          patch("apps.jobs.views.enqueue"), \
@@ -27,7 +32,7 @@ def test_create_job_success(api_client, sample_image_bytes, model_version):
 
         response = api_client.post(
             "/v1/jobs",
-            {"image": ("test.png", sample_image_bytes, "image/png")},
+            {"image": image},
             format="multipart",
         )
 
@@ -60,11 +65,14 @@ def test_create_job_duplicate_returns_cached(api_client, sample_image_bytes, mod
         input_sha256="abc123",
     )
 
+    image = io.BytesIO(sample_image_bytes)
+    image.name = "test.png"
+
     # get_cache가 기존 job_id를 반환하도록 Mock
     with patch("apps.jobs.views.get_cache", return_value=existing_job.id):
         response = api_client.post(
             "/v1/jobs",
-            {"image": ("test.png", sample_image_bytes, "image/png")},
+            {"image": image},
             format="multipart",
         )
 
@@ -76,10 +84,13 @@ def test_create_job_duplicate_returns_cached(api_client, sample_image_bytes, mod
 @pytest.mark.django_db
 def test_create_job_no_model_version(api_client, sample_image_bytes):
     """등록된 ModelVersion이 없을 때 503을 반환하는지 검증."""
+    image = io.BytesIO(sample_image_bytes)
+    image.name = "test.png"
+
     with patch("apps.jobs.views.get_cache", return_value=None):
         response = api_client.post(
             "/v1/jobs",
-            {"image": ("test.png", sample_image_bytes, "image/png")},
+            {"image": image},
             format="multipart",
         )
 

@@ -12,33 +12,21 @@ import io
 import numpy as np
 import pytest
 from PIL import Image
-from django.test import override_settings
 from rest_framework.test import APIClient
-
-
-# ── DB 설정 오버라이드 ───────────────────────────────────────────
-# MySQL 대신 SQLite 인메모리 DB 사용 (외부 DB 없이 테스트 가능)
-# Spring의 @DataJpaTest가 내부적으로 H2 인메모리 DB로 교체하는 것과 동일
-TEST_DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": ":memory:",  # 파일 없이 메모리에만 존재 → 테스트 종료 시 자동 소멸
-    }
-}
 
 
 @pytest.fixture(scope="session")
 def django_db_setup(django_test_environment, django_db_blocker):
     """
     세션 전체에서 SQLite 인메모리 DB 사용.
+    pytest.ini의 DJANGO_SETTINGS_MODULE = config.test_settings 으로
+    DB가 이미 SQLite로 설정돼 있으므로 여기서는 migrate만 실행.
     scope="session": 모든 테스트가 DB 인스턴스를 공유 (매 테스트마다 재생성 안 함)
     """
-    with override_settings(DATABASES=TEST_DATABASES):
-        with django_db_blocker.unblock():
-            from django.test.utils import setup_test_environment
-            from django.db import connections
-            for conn in connections.all():
-                conn.ensure_connection()
+    with django_db_blocker.unblock():
+        # SQLite 인메모리 DB에 테이블 생성 (Spring의 Flyway/Liquibase와 동일)
+        from django.core.management import call_command
+        call_command("migrate", verbosity=0)
 
 
 @pytest.fixture

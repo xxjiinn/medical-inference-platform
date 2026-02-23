@@ -1,0 +1,14 @@
+.env
+CLAUDE.md
+project_guide.md
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+mysql_data/
+*.onnx

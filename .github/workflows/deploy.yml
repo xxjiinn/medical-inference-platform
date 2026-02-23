@@ -36,9 +36,12 @@ jobs:
       - name: Run tests
         env:
           DJANGO_SETTINGS_MODULE: config.test_settings
-          REDIS_HOST: localhost
-          REDIS_PORT: 6379
           SECRET_KEY: "test-secret-key-for-ci"
+          MYSQL_DATABASE: test
+          MYSQL_USER: test
+          MYSQL_PASSWORD: test
+          MYSQL_HOST: localhost
+          REDIS_URL: "redis://localhost:6379/0"
         run: pytest --tb=short -q
 
   # ── 2. EC2 배포 (main 푸시 시에만) ───────────────────────

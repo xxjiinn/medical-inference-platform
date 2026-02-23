@@ -184,6 +184,12 @@ def run_worker():
 
     signal.signal(signal.SIGTERM, handle_sigterm)
 
+    # 워커 프로세스당 PyTorch thread 수를 1로 제한.
+    # 2 workers * multi-thread = vCPU 2개에서 thread 경합 발생.
+    # 각 worker를 single-thread로 고정해 CPU 스케줄링 충돌 방지.
+    import torch
+    torch.set_num_threads(1)
+
     # 모델 로드 (HuggingFace 캐시 또는 다운로드 후 메모리에 올림)
     loader = get_loader()
     loader.load()

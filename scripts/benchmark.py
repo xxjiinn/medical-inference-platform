@@ -97,11 +97,22 @@ def benchmark_batch(batch_sizes: list[int] = [1, 2, 4, 8]) -> None:
 
     pt_loader = get_loader()
     pt_loader.load()
+
+    # ONNX 모델 파일이 없으면 배치 비교 없이 PyTorch만 측정
     onnx_loader = get_onnx_loader()
-    onnx_loader.load()
+    onnx_available = False
+    try:
+        onnx_loader.load()
+        onnx_available = True
+    except FileNotFoundError:
+        print("\n  [SKIP] ONNX batch benchmark skipped — model file not found.")
+        print("  Reason: densenet121-res224-all is not exportable to ONNX (see ADR-003).\n")
 
     print("\n=== Batch Inference Benchmark ===")
-    print(f"{'Batch':>6} | {'PyTorch p50':>12} | {'ONNX p50':>10} | {'Speedup':>8}")
+    header = f"{'Batch':>6} | {'PyTorch p50':>12}"
+    if onnx_available:
+        header += f" | {'ONNX p50':>10} | {'Speedup':>8}"
+    print(header)
     print("-" * 50)
 
     for bs in batch_sizes:

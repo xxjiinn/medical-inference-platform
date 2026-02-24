@@ -56,6 +56,31 @@ class HospitalUser(HttpUser):
     """
     wait_time = between(1, 3)
 
+    def on_start(self):
+        """
+        테스트 시작 전 고정 이미지를 미리 처리해 캐시를 워밍업.
+        이 작업 없이 부하 테스트를 시작하면 cache_hit 요청이 COMPLETED가
+        아닌 QUEUED 상태의 job을 기다리다 타임아웃됨.
+        첫 번째 유저만 실제로 제출하고 나머지는 캐시를 자연스럽게 재사용.
+        """
+        image_bytes = make_xray_image(fixed=True)
+        resp = self.client.post(
+            "/v1/jobs",
+            files={"image": ("xray.png", image_bytes, "image/png")},
+            name="/v1/jobs (warmup)",
+        )
+        if resp.status_code not in (200, 201):
+            return
+        job_id = resp.json().get("id")
+
+        # 워밍업 job이 COMPLETED될 때까지 대기 (최대 30초)
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            res = self.client.get(f"/v1/jobs/{job_id}", name="/v1/jobs/[id] (warmup)")
+            if res.json().get("status") == "COMPLETED":
+                break
+            time.sleep(0.2)
+
     def _submit_and_wait(self, image_bytes: bytes, label: str) -> None:
         """
         이미지 제출 후 COMPLETED/FAILED 될 때까지 폴링.

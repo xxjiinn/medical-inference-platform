@@ -14,10 +14,14 @@ import redis
 import os
 
 # 환경변수에서 Redis URL 읽기 (e.g. "redis://redis:6379/0")
-REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+# settings.py와 동일하게 필수값으로 처리 — 없으면 명확한 에러 발생
+REDIS_URL = os.environ["REDIS_URL"]
 
 # Redis 큐 키 이름
 QUEUE_KEY = "inference:queue"
+
+# 3회 재시도 후 최종 실패한 job을 보관하는 Dead Letter Queue 키
+DLQ_KEY = "dlq:failed_jobs"
 
 # 중복 요청 캐시 TTL (초)
 CACHE_TTL = 600  # 10분

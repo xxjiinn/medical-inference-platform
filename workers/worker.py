@@ -8,6 +8,8 @@ worker.py
 
 import os
 import sys
+import time
+import json
 import signal
 import logging
 import redis as redis_lib
@@ -22,7 +24,7 @@ django.setup()
 
 from django.conf import settings
 from apps.jobs.models import InferenceJob, InferenceResult
-from workers.redis_queue import collect_batch, REDIS_URL
+from workers.redis_queue import collect_batch, REDIS_URL, DLQ_KEY
 
 # INFERENCE_ENGINE 설정에 따라 로더 선택
 # "onnx"면 OnnxLoader, 그 외(기본값 "pytorch")면 ModelLoader 사용
@@ -33,6 +35,11 @@ else:
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="[Worker %(process)d] %(message)s")
+
+
+def log(event: str, **kwargs):
+    """구조화 로그 출력. job_id 등 컨텍스트를 JSON으로 기록해 추적 가능하게 함."""
+    logger.info(json.dumps({"event": event, **kwargs}, ensure_ascii=False))
 
 
 # ── 이미지 가져오기 ────────────────────────────────────────────
@@ -73,7 +80,7 @@ def process_batch(job_ids: list[int]) -> None:
     # DB에 없는 job_id 경고 (이미 삭제된 경우 등)
     for jid in job_ids:
         if jid not in jobs:
-            logger.warning(f"Job {jid} not found in DB, skipping.")
+            logger.warning(f"⚠️ Job {jid} DB에 없음, 스킵")
 
     if not jobs:
         return
@@ -83,7 +90,8 @@ def process_batch(job_ids: list[int]) -> None:
     InferenceJob.objects.filter(pk__in=list(jobs.keys())).update(
         status=InferenceJob.Status.IN_PROGRESS
     )
-    logger.info(f"Batch of {len(jobs)} jobs -> IN_PROGRESS")
+    batch_start = time.time()  # 배치 전체 처리 시작 시각 기록
+    log("batch_start", job_ids=list(jobs.keys()), batch_size=len(jobs))
 
     # 3. 각 Job의 이미지 bytes를 Redis에서 가져와 전처리
     valid_jobs = []    # 정상적으로 전처리된 (job, tensor) 쌍
@@ -92,14 +100,14 @@ def process_batch(job_ids: list[int]) -> None:
     for job in jobs.values():
         image_bytes = fetch_image_bytes(job.input_sha256)
         if image_bytes is None:
-            logger.warning(f"Job {job.id}: image not found in Redis (expired?)")
+            log("image_not_found", job_id=job.id, reason="redis_expired_or_missing")
             failed_jobs.append(job)
             continue
         try:
             tensor = loader.preprocess(image_bytes)  # bytes -> (1,1,224,224) tensor
             valid_jobs.append((job, tensor))
         except Exception as e:
-            logger.warning(f"Job {job.id}: preprocess failed — {e}")
+            log("preprocess_failed", job_id=job.id, error=str(e))
             failed_jobs.append(job)
 
     # 4. 유효한 job들을 배치 추론
@@ -114,12 +122,12 @@ def process_batch(job_ids: list[int]) -> None:
             batch_scores = loader.predict_batch(tensors)
         except TimeoutError:
             # 배치 전체 타임아웃 -> 전부 개별 재시도 대상으로 이동
-            logger.error(f"Batch inference timed out. Moving all to retry.")
+            log("inference_timeout", job_ids=[job.id for job, _ in valid_jobs])
             failed_jobs.extend(job for job, _ in valid_jobs)
             valid_jobs = []
             batch_scores = []
         except Exception as e:
-            logger.error(f"Batch inference error: {e}. Moving all to retry.")
+            log("inference_error", job_ids=[job.id for job, _ in valid_jobs], error=str(e))
             failed_jobs.extend(job for job, _ in valid_jobs)
             valid_jobs = []
             batch_scores = []
@@ -132,7 +140,8 @@ def process_batch(job_ids: list[int]) -> None:
             InferenceResult.objects.create(job=job, output=scores, top_label=top_label)
             job.status = InferenceJob.Status.COMPLETED
             job.save(update_fields=["status", "updated_at"])
-            logger.info(f"Job {job.id} COMPLETED — top_label={top_label}")
+            latency_ms = round((time.time() - batch_start) * 1000, 1)
+            log("inference_completed", job_id=job.id, top_label=top_label, latency_ms=latency_ms)
 
     # 6. 실패 job들: 재시도 횟수 체크 후 처리
     #    재시도 횟수는 Redis에 카운터로 관리 (DB 추가 컬럼 없이)
@@ -158,14 +167,17 @@ def _handle_failed_jobs(jobs: list) -> None:
 
         if attempt <= settings.MAX_RETRIES:
             # 재시도 가능 -> 큐 맨 뒤에 다시 등록
-            logger.warning(f"Job {job.id}: retry {attempt}/{settings.MAX_RETRIES}, re-enqueuing.")
+            log("job_retry", job_id=job.id, attempt=f"{attempt}/{settings.MAX_RETRIES}")
             enqueue(job.id)
         else:
             # 재시도 횟수 소진 -> FAILED 확정
             job.status = InferenceJob.Status.FAILED
             job.save(update_fields=["status", "updated_at"])
             r.delete(retry_key)  # 카운터 정리
-            logger.error(f"Job {job.id}: FAILED after {settings.MAX_RETRIES} retries.")
+            # Dead Letter Queue에 job_id 보관 (운영자가 나중에 확인/재처리 가능)
+            # DLQ는 영구 보관 — TTL 없음
+            r.lpush(DLQ_KEY, job.id)
+            log("job_failed", job_id=job.id, max_retries=settings.MAX_RETRIES, dlq=DLQ_KEY)
 
 
 # ── 워커 메인 루프 ─────────────────────────────────────────────
@@ -179,21 +191,15 @@ def run_worker():
 
     def handle_sigterm(signum, frame):
         nonlocal shutdown
-        logger.info("Received SIGTERM. Finishing current batch and shutting down...")
+        logger.info("⚠️ SIGTERM 수신 — 현재 배치 완료 후 종료")
         shutdown = True
 
     signal.signal(signal.SIGTERM, handle_sigterm)
 
-    # 워커 프로세스당 PyTorch thread 수를 1로 제한.
-    # 2 workers * multi-thread = vCPU 2개에서 thread 경합 발생.
-    # 각 worker를 single-thread로 고정해 CPU 스케줄링 충돌 방지.
-    import torch
-    torch.set_num_threads(1)
-
     # 모델 로드 (HuggingFace 캐시 또는 다운로드 후 메모리에 올림)
     loader = get_loader()
     loader.load()
-    logger.info("Model loaded. Worker ready.")
+    logger.info("✅ 모델 로드 완료 — Worker 준비 ㄱㄱ")
 
     while not shutdown:
         # 30ms 윈도우로 배치 수집 (최대 8개)
@@ -207,10 +213,10 @@ def run_worker():
             # 큐가 비어있음 — shutdown 여부 체크 후 다시 대기
             continue
 
-        logger.info(f"Collected batch: {job_ids}")
+        logger.info(f"🔥 Batch 수집: {job_ids}")
         process_batch(job_ids)
 
-    logger.info("Worker shut down cleanly.")
+    logger.info("✅ Worker 정상 종료")
 
 
 if __name__ == "__main__":

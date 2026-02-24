@@ -7,6 +7,7 @@ views.py (ops)
 
 from datetime import timedelta
 
+import redis
 import numpy as np
 from django.db.models import F, ExpressionWrapper, DurationField
 from django.utils import timezone
@@ -14,6 +15,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.jobs.models import InferenceJob, InferenceResult
+from workers.redis_queue import REDIS_URL, DLQ_KEY
 
 # 지표 집계 시간 윈도우 (최근 5분)
 METRICS_WINDOW_MINUTES = 5
@@ -92,4 +94,32 @@ class MetricsView(APIView):
             "total_requests": total,
             "success_requests": success,
             "failed_requests": failed,
+        })
+
+
+class DLQView(APIView):
+    """
+    GET /v1/ops/dlq
+    3회 재시도 후 최종 실패한 job 목록 조회.
+    Redis dlq:failed_jobs 리스트에서 job_id를 읽어 DB 정보와 함께 반환.
+    운영자가 장애 원인 파악 및 수동 재처리에 사용.
+    """
+
+    def get(self, request):
+        r = redis.from_url(REDIS_URL, decode_responses=True)
+
+        # DLQ 전체 조회 (0 ~ -1 = 처음부터 끝까지)
+        job_ids = r.lrange(DLQ_KEY, 0, -1)
+
+        if not job_ids:
+            return Response({"count": 0, "jobs": []})
+
+        # DB에서 해당 job들의 상세 정보 조회
+        jobs = InferenceJob.objects.filter(pk__in=job_ids).values(
+            "id", "status", "input_sha256", "created_at", "updated_at"
+        )
+
+        return Response({
+            "count": len(job_ids),
+            "jobs": list(jobs),
         })

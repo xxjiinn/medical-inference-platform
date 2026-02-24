@@ -8,10 +8,13 @@ onnx_loader.py
 
 import io
 import os
+import logging
 import numpy as np
 import onnxruntime as ort
 import torchxrayvision as xrv
 from PIL import Image
+
+logger = logging.getLogger(__name__)
 
 # ONNX 모델 파일 경로 (convert_to_onnx.py로 생성한 파일)
 DEFAULT_ONNX_PATH = os.path.join(
@@ -70,7 +73,7 @@ class OnnxLoader:
 
         # 입력 노드 이름 저장 (convert_to_onnx.py에서 "input"으로 지정)
         self._input_name = self._session.get_inputs()[0].name
-        print(f"[OnnxLoader] Session ready. Input: {self._input_name}")
+        logger.info(f"✅ ONNX 세션 준비 완료 — 입력 노드: {self._input_name}")
 
     def preprocess(self, image_bytes: bytes) -> np.ndarray:
         """

@@ -5,10 +5,13 @@ model_loader.py
 """
 
 import io
+import logging
 import numpy as np
 import torch
 import torchxrayvision as xrv
 from PIL import Image
+
+logger = logging.getLogger(__name__)
 
 # 로드할 모델 이름 (HuggingFace Hub에서 자동 다운로드)
 MODEL_WEIGHTS = "densenet121-res224-all"
@@ -32,7 +35,7 @@ class ModelLoader:
         모델을 HuggingFace Hub에서 다운로드하고 메모리에 올린다.
         이미 캐시된 경우 HF_HOME 디렉토리에서 바로 로드 (재다운로드 없음).
         """
-        print(f"[ModelLoader] Loading model: {MODEL_WEIGHTS}")
+        logger.info(f"☑️ 모델 로딩 중: {MODEL_WEIGHTS}")
 
         # torchxrayvision이 HuggingFace Hub에서 가중치를 자동 다운로드+캐싱
         self._model = xrv.models.DenseNet(weights=MODEL_WEIGHTS)
@@ -40,7 +43,7 @@ class ModelLoader:
         # eval() = 추론 모드 전환 (Spring의 read-only 서비스처럼 Dropout/BatchNorm 비활성화)
         self._model.eval()
 
-        print(f"[ModelLoader] Model loaded. Pathologies: {self._model.pathologies}")
+        logger.info(f"✅ 모델 로드 완료 — 병리 항목 수: {len(self._model.pathologies)}")
 
     @property
     def model(self):

@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(docker-compose up -d 2>&1)",
+      "Bash(docker-compose logs --tail=30 api 2>&1)",
+      "Bash(docker-compose run --rm api pytest tests/ -v 2>&1)",
+      "Bash(docker-compose run --rm api python scripts/convert_to_onnx.py 2>&1)",
+      "Bash(docker-compose run --rm api python scripts/benchmark.py 2>&1)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebSearch",
+      "WebFetch(domain:mlmed.org)",
+      "Bash(docker compose exec api python -m pytest tests/ -q 2>&1 | tail -20)",
+      "Bash(docker compose exec api python -m pytest tests/ -q 2>&1 | tail -10)",
+      "Bash(docker compose exec api python -m pytest tests/ -q 2>&1 | tail -8)",
+      "Bash(python -m pytest tests/ -v --tb=short 2>&1 | tail -40)",
+      "Bash(docker-compose exec api python -m pytest tests/ -v --tb=short 2>&1 | tail -50)",
+      "Bash(find /Users/oseongjin/Documents/Sungjin/JLK/ai-serving/tests -name \"*.py\" -type f | xargs grep -l \"def test_\" | xargs -I {} basename {})",
+      "Bash(grep -rn \"torch.compile\\\\|0\\\\.81\\\\|dynamo\" /Users/oseongjin/Documents/Sungjin/JLK/ai-serving/ --include=\"*.py\" --include=\"*.md\" 2>/dev/null | grep -v \".pyc\")"
+    ]
+  }
+}

@@ -1,7 +1,8 @@
 """
 test_worker.py
-역할: workers/worker.py의 핵심 추론 로직(process_batch, _handle_failed_jobs)을
-      Mock 객체로 단위 테스트. 실제 모델·Redis 없이 DB 상태 변화만 검증.
+역할: workers/worker.py의 핵심 추론 로직(process_batch, _handle_failed_jobs)과
+      workers/main.py의 _recover_stuck_jobs()를 Mock 객체로 단위 테스트.
+      실제 모델·Redis 없이 DB 상태 변화만 검증.
       Spring의 @MockBean + @SpringBootTest(webEnvironment=NONE)과 동일한 개념.
 """
 
@@ -87,7 +88,7 @@ def test_process_batch_image_not_found(inference_job, mock_loader):
         patch("workers.worker.fetch_image_bytes", return_value=None),  # 이미지 없음
         patch("workers.worker.get_loader", return_value=mock_loader),
         # _handle_failed_jobs 내 retry 카운터용 Redis 연결 mock
-        patch("workers.worker.redis_lib.from_url", return_value=mock_redis),
+        patch("workers.worker.redis.from_url", return_value=mock_redis),
         # enqueue() 내부의 get_redis() mock (큐 재등록 경로)
         patch("workers.redis_queue.get_redis", return_value=mock_redis),
         patch("signal.alarm"),
@@ -118,7 +119,7 @@ def test_process_batch_preprocess_failure(inference_job, mock_loader):
     with (
         patch("workers.worker.fetch_image_bytes", return_value=b"bad_image"),
         patch("workers.worker.get_loader", return_value=mock_loader),
-        patch("workers.worker.redis_lib.from_url", return_value=mock_redis),
+        patch("workers.worker.redis.from_url", return_value=mock_redis),
         patch("workers.redis_queue.get_redis", return_value=mock_redis),
         patch("signal.alarm"),
     ):
@@ -160,7 +161,7 @@ def test_handle_failed_jobs_retry(inference_job):
 
     with (
         # retry 카운터(INCR/EXPIRE) 처리용 Redis mock
-        patch("workers.worker.redis_lib.from_url", return_value=mock_redis),
+        patch("workers.worker.redis.from_url", return_value=mock_redis),
         # enqueue() 내부 LPUSH용 get_redis() mock
         patch("workers.redis_queue.get_redis", return_value=mock_redis),
     ):
@@ -190,7 +191,7 @@ def test_handle_failed_jobs_dlq(inference_job):
     mock_redis.incr.return_value = settings.MAX_RETRIES + 1
 
     with (
-        patch("workers.worker.redis_lib.from_url", return_value=mock_redis),
+        patch("workers.worker.redis.from_url", return_value=mock_redis),
         patch("workers.redis_queue.get_redis", return_value=mock_redis),
     ):
         _handle_failed_jobs([inference_job])
@@ -204,4 +205,79 @@ def test_handle_failed_jobs_dlq(inference_job):
     mock_redis.lpush.assert_called_with("dlq:failed_jobs", inference_job.id)
 
     # retry 카운터 키 삭제 검증 (Redis 정리)
+    mock_redis.delete.assert_called_once_with(f"retry:{inference_job.id}")
+
+
+# ── _recover_stuck_jobs() 테스트 ─────────────────────────────────
+
+@pytest.mark.django_db
+def test_recover_stuck_jobs_requeue(inference_job):
+    """
+    stuck job 복구 경로: attempt <= MAX_RETRIES이면
+    status가 QUEUED로 돌아오고 inference:queue에 재등록되는지 검증.
+    """
+    from workers.main import _recover_stuck_jobs
+    from django.conf import settings
+
+    # updated_at을 20분 전으로 강제 설정해 stuck 조건 충족
+    InferenceJob.objects.filter(pk=inference_job.id).update(
+        status=InferenceJob.Status.IN_PROGRESS,
+    )
+    from django.utils import timezone
+    from datetime import timedelta
+    InferenceJob.objects.filter(pk=inference_job.id).update(
+        updated_at=timezone.now() - timedelta(minutes=20),
+    )
+
+    mock_redis = MagicMock()
+    mock_redis.incr.return_value = 1  # 첫 번째 recovery 시도 (1 <= MAX_RETRIES=3)
+
+    with (
+        patch("workers.main.redis.from_url", return_value=mock_redis),
+        patch("workers.redis_queue.get_redis", return_value=mock_redis),
+    ):
+        _recover_stuck_jobs()
+
+    inference_job.refresh_from_db()
+    # recovery 후 QUEUED로 복귀 검증
+    assert inference_job.status == InferenceJob.Status.QUEUED
+    # inference:queue에 재등록 검증
+    mock_redis.lpush.assert_called_with("inference:queue", str(inference_job.id))
+
+
+@pytest.mark.django_db
+def test_recover_stuck_jobs_dlq_on_max_retries(inference_job):
+    """
+    stuck job 복구 DLQ 경로: recovery 시도가 MAX_RETRIES 초과 시
+    FAILED 확정 + DLQ push되는지 검증.
+    mid-inference SIGKILL 무한루프 방지 메커니즘 확인.
+    """
+    from workers.main import _recover_stuck_jobs
+    from django.conf import settings
+
+    InferenceJob.objects.filter(pk=inference_job.id).update(
+        status=InferenceJob.Status.IN_PROGRESS,
+    )
+    from django.utils import timezone
+    from datetime import timedelta
+    InferenceJob.objects.filter(pk=inference_job.id).update(
+        updated_at=timezone.now() - timedelta(minutes=20),
+    )
+
+    mock_redis = MagicMock()
+    # MAX_RETRIES+1 → 재시도 횟수 소진 (DLQ 경로)
+    mock_redis.incr.return_value = settings.MAX_RETRIES + 1
+
+    with (
+        patch("workers.main.redis.from_url", return_value=mock_redis),
+        patch("workers.redis_queue.get_redis", return_value=mock_redis),
+    ):
+        _recover_stuck_jobs()
+
+    inference_job.refresh_from_db()
+    # recovery 횟수 초과 → FAILED 확정
+    assert inference_job.status == InferenceJob.Status.FAILED
+    # DLQ push 검증
+    mock_redis.lpush.assert_called_with("dlq:failed_jobs", inference_job.id)
+    # retry 카운터 삭제 검증
     mock_redis.delete.assert_called_once_with(f"retry:{inference_job.id}")

@@ -2,6 +2,29 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
+# ──────────────────────────────────────────────────────────────
+# 환경별 .env 설정 가이드
+#
+# [로컬 개발 환경 — macOS / Docker Compose]
+#   DEBUG=True
+#   SECRET_KEY=any-random-string-for-local
+#   ALLOWED_HOSTS=*
+#   MYSQL_HOST=db          (docker-compose 서비스명)
+#   MYSQL_PORT=3306
+#   REDIS_URL=redis://redis:6379/0
+#   WORKER_COUNT=1         (로컬은 코어 1개로 충분)
+#   INFERENCE_DEVICE=cpu   (M4 MacBook에서도 MPS 대신 CPU가 더 안정적)
+#
+# [프로덕션 — EC2 t3.large (vCPU=2, RAM=8GB)]
+#   DEBUG=False
+#   SECRET_KEY=<강력한-랜덤-키>
+#   ALLOWED_HOSTS=<EC2-퍼블릭-IP>
+#   MYSQL_HOST=db
+#   REDIS_URL=redis://redis:6379/0
+#   WORKER_COUNT=2         (t3.large vCPU 수에 맞춤)
+#   INFERENCE_DEVICE=cpu   (GPU 없는 EC2)
+# ──────────────────────────────────────────────────────────────
+
 # .env 파일을 읽어서 환경변수로 등록 (DB 비밀번호 등 민감정보를 코드 밖에서 관리)
 load_dotenv()
 
@@ -12,8 +35,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = os.environ["SECRET_KEY"]
 # True면 디버그 모드 (에러 상세 출력), 운영환경에서는 반드시 False
 DEBUG = os.getenv("DEBUG", "False") == "True"
-# 허용할 호스트 도메인 (* = 모두 허용, 개발용)
-ALLOWED_HOSTS = ["*"]
+# 허용할 호스트 도메인 — 쉼표 구분으로 여러 값 지정 가능
+# 로컬: ALLOWED_HOSTS=* / EC2: ALLOWED_HOSTS=<퍼블릭-IP>
+ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "*").split(",")
 
 # Django가 인식할 앱 목록 (Spring의 @ComponentScan 대상)
 INSTALLED_APPS = [
@@ -48,9 +72,15 @@ DATABASES = {
 # Redis 연결 URL (큐 + 캐시에 사용)
 REDIS_URL = os.environ["REDIS_URL"]
 
-# DRF 기본 설정: 응답을 항상 JSON으로 렌더링
+# DRF 기본 설정
 REST_FRAMEWORK = {
     "DEFAULT_RENDERER_CLASSES": ["rest_framework.renderers.JSONRenderer"],
+    # Rate limiting: IP당 분당 60회 (AnonRateThrottle, POST /v1/jobs에 적용)
+    # 헬스체크 등 운영 엔드포인트는 throttle_classes = [] 로 별도 제외
+    "DEFAULT_THROTTLE_CLASSES": [],  # 전역 적용 없음 — view 단위 명시적 적용
+    "DEFAULT_THROTTLE_RATES": {
+        "anon": "60/min",  # JobCreateView에서 AnonRateThrottle 참조
+    },
 }
 
 # 모델의 기본 PK 타입을 BigInt(64bit)로 설정

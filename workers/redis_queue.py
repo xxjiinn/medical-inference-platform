@@ -1,7 +1,7 @@
 """
 queue.py
 역할: Redis 큐와 캐시 조작을 담당하는 헬퍼 모듈.
-      API 서버(enqueue)와 워커(dequeue) 양쪽에서 공유해서 사용.
+      API 서버(enqueue/store_image/set_cache)와 워커(collect_batch/fetch_image) 양쪽에서 공유.
       Spring의 @Component 유틸리티 빈과 동일한 개념.
 
 Redis 키 구조:
@@ -10,6 +10,7 @@ Redis 키 구조:
   - 캐시:      cache:sha256:{hash}      (String, TTL 600초 = 10분)
 """
 
+import time
 import redis
 import os
 
@@ -40,24 +41,6 @@ def enqueue(job_id: int) -> None:
     """
     r = get_redis()
     r.lpush(QUEUE_KEY, str(job_id))
-
-
-def dequeue(timeout: int = 5) -> int | None:
-    """
-    Redis 큐의 오른쪽에서 job_id를 꺼냄 (BRPOP, blocking).
-    큐가 비어있으면 timeout초 동안 대기 후 None 반환.
-    Spring의 BlockingQueue.poll(timeout, unit)과 동일.
-
-    Returns:
-        job_id (int) or None (타임아웃)
-    """
-    r = get_redis()
-    # BRPOP 반환값: (key, value) 튜플 또는 None
-    result = r.brpop(QUEUE_KEY, timeout=timeout)
-    if result is None:
-        return None
-    _, job_id_str = result
-    return int(job_id_str)
 
 
 def get_cache(sha256: str) -> int | None:
@@ -106,8 +89,6 @@ def collect_batch(max_wait_ms: int = 30, max_size: int = 8) -> list[int]:
     Returns:
         job_id 리스트 (비어있으면 큐 타임아웃)
     """
-    import time
-
     r_str = get_redis()                                      # str 응답용 (job_id 읽기)
 
     # 1단계: 첫 번째 job 블로킹 대기 (최대 5초)

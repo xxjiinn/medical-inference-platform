@@ -17,12 +17,12 @@ def test_metrics_returns_correct_structure(api_client):
 
     assert response.status_code == 200
     # 필수 키 존재 여부 확인
-    for key in ["throughput_rps", "failure_rate", "latency_seconds",
+    for key in ["throughput_rps", "failure_rate", "end_to_end_latency_seconds",
                 "total_requests", "success_requests", "failed_requests"]:
         assert key in response.data, f"Missing key: {key}"
 
     # 데이터 없을 때 latency 0으로 반환하는지 확인
-    assert response.data["latency_seconds"]["p50"] == 0.0
+    assert response.data["end_to_end_latency_seconds"]["p50"] == 0.0
     assert response.data["total_requests"] == 0
 
 
@@ -94,5 +94,5 @@ def test_metrics_latency_calculated(api_client, model_version):
 
     response = api_client.get("/v1/ops/metrics")
 
-    # latency p50이 0보다 크면 계산된 것
-    assert response.data["latency_seconds"]["p50"] > 0
+    # end-to-end latency p50이 0보다 크면 계산된 것
+    assert response.data["end_to_end_latency_seconds"]["p50"] > 0

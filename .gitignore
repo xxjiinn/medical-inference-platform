@@ -13,4 +13,5 @@ venv/
 mysql_data/
 *.onnx
 models/
-.claude/
+.claude/.DS_Store
+**/.DS_Store

@@ -14,6 +14,8 @@ import logging
 import multiprocessing
 from datetime import timedelta
 
+import redis
+
 # 프로젝트 루트 경로 추가
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -30,31 +32,91 @@ logging.basicConfig(level=logging.INFO, format="[Manager] %(message)s")
 
 def _recover_stuck_jobs() -> None:
     """
-    워커 크래시 등으로 IN_PROGRESS에서 멈춘 job을 QUEUED로 되돌려 재큐잉.
-    기준: updated_at이 10분 이상 지난 IN_PROGRESS job.
-    (정상 추론은 EC2 기준 최대 2~3초 이내 완료 — 10분은 충분한 여유)
+    두 가지 stuck 상태를 복구:
 
-    호출 주기: 10분마다 (RECOVERY_INTERVAL).
+    1. IN_PROGRESS stuck (10분 초과):
+       워커 크래시(SIGKILL 등)로 추론 중 멈춘 job.
+       기준: updated_at이 10분 이상 지난 IN_PROGRESS job.
+
+    2. QUEUED stuck (5분 초과):
+       API 서버 크래시로 DB 생성 후 Redis enqueue가 유실된 job.
+       (정상 흐름에서 QUEUED → IN_PROGRESS는 수초 이내 — 5분 경과 시 유실 판단)
+       image Redis TTL = 10분이므로 5분 기준 복구 시 이미지 여전히 유효.
+
+    두 케이스 모두 동일한 retry 카운터(retry:{job_id})를 공유.
+    MAX_RETRIES 초과 시 FAILED + DLQ 처리.
     """
     from django.utils import timezone
     from apps.jobs.models import InferenceJob
-    from workers.redis_queue import enqueue
+    from workers.redis_queue import enqueue, REDIS_URL, DLQ_KEY
 
-    threshold = timezone.now() - timedelta(minutes=10)
-    stuck = InferenceJob.objects.filter(
+    now = timezone.now()
+    # IN_PROGRESS: updated_at 기준 (마지막 상태 변경 시각)
+    in_progress_threshold = now - timedelta(minutes=10)
+    # QUEUED stuck: created_at 기준 (생성 이후 한 번도 처리 시작 안 됨)
+    queued_threshold = now - timedelta(minutes=5)
+
+    stuck_in_progress = list(InferenceJob.objects.filter(
         status=InferenceJob.Status.IN_PROGRESS,
-        updated_at__lt=threshold,
-    )
-    count = stuck.count()
-    if count == 0:
+        updated_at__lt=in_progress_threshold,
+    ))
+    stuck_queued = list(InferenceJob.objects.filter(
+        status=InferenceJob.Status.QUEUED,
+        created_at__lt=queued_threshold,
+    ))
+
+    if not stuck_in_progress and not stuck_queued:
         return
 
-    logger.warning(f"❗️ IN_PROGRESS stuck job {count}개 감지 — QUEUED로 되돌려 재큐잉")
-    for job in stuck:
-        job.status = InferenceJob.Status.QUEUED
-        job.save(update_fields=["status", "updated_at"])
-        enqueue(job.id)
-        logger.info(f"  ↩️  Job {job.id} 재큐잉 완료")
+    r = redis.from_url(REDIS_URL, decode_responses=True)
+
+    # ── IN_PROGRESS stuck 복구 ────────────────────────────────────
+    if stuck_in_progress:
+        logger.warning(f"❗️ IN_PROGRESS stuck job {len(stuck_in_progress)}개 감지")
+        for job in stuck_in_progress:
+            retry_key = f"retry:{job.id}"
+            attempt = r.incr(retry_key)   # 복구 시도 횟수 증가
+            r.expire(retry_key, 3600)     # 1시간 후 자동 삭제
+
+            if attempt > settings.MAX_RETRIES:
+                job.status = InferenceJob.Status.FAILED
+                job.save(update_fields=["status", "updated_at"])
+                r.delete(retry_key)
+                r.lpush(DLQ_KEY, job.id)
+                r.ltrim(DLQ_KEY, 0, 999)  # DLQ 상한 1000개 유지
+                logger.warning(
+                    f"  ❌ Job {job.id} 재시도 {settings.MAX_RETRIES}회 초과 → FAILED (DLQ)"
+                )
+            else:
+                job.status = InferenceJob.Status.QUEUED
+                job.save(update_fields=["status", "updated_at"])
+                enqueue(job.id)
+                logger.info(f"  ↩️  Job {job.id} 재큐잉 ({attempt}/{settings.MAX_RETRIES})")
+
+    # ── QUEUED stuck 복구 ──────────────────────────────────────────
+    # 원인: POST /v1/jobs에서 DB create 성공 후 enqueue 전 서버 크래시
+    # 해결: Redis 큐에 job_id 재등록 (DB status는 이미 QUEUED이므로 변경 불필요)
+    if stuck_queued:
+        logger.warning(f"❗️ QUEUED stuck job {len(stuck_queued)}개 감지 (enqueue 유실 추정)")
+        for job in stuck_queued:
+            retry_key = f"retry:{job.id}"
+            attempt = r.incr(retry_key)   # 복구 시도 횟수 증가
+            r.expire(retry_key, 3600)     # 1시간 후 자동 삭제
+
+            if attempt > settings.MAX_RETRIES:
+                job.status = InferenceJob.Status.FAILED
+                job.save(update_fields=["status", "updated_at"])
+                r.delete(retry_key)
+                r.lpush(DLQ_KEY, job.id)
+                logger.warning(
+                    f"  ❌ QUEUED stuck Job {job.id} → FAILED (DLQ)"
+                )
+            else:
+                # DB status는 QUEUED 유지 — Redis 큐에만 재등록
+                enqueue(job.id)
+                logger.info(
+                    f"  ↩️  QUEUED stuck Job {job.id} 재큐잉 ({attempt}/{settings.MAX_RETRIES})"
+                )
 
 
 def start_worker_process() -> multiprocessing.Process:

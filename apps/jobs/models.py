@@ -2,50 +2,60 @@ from django.db import models
 
 
 class ModelVersion(models.Model):
-    """사용할 AI 모델 버전 정보를 저장하는 테이블 (model_versions)"""
+    """
+    사용 중인 AI 모델 버전을 추적하는 테이블.
+    현재는 단일 모델(densenet121-res224-all)만 사용하지만,
+    향후 모델 교체·실험 시 버전 이력을 남기기 위해 별도 테이블로 분리했다.
+    """
 
-    # 모델 식별 이름 (e.g. "densenet121-res224-all"), 중복 불가
+    # 모델 식별 이름 (e.g. "densenet121-res224-all"), unique=True로 중복 등록 방지
     name = models.CharField(max_length=255, unique=True)
-    # 모델 가중치 파일 경로 (HuggingFace 캐시 경로 또는 로컬 경로)
+    # HuggingFace 캐시 경로 또는 로컬 파일 경로 — 모델 가중치 위치 기록
     weights_path = models.CharField(max_length=512)
-    # 레코드 생성 시각 (자동 기록, 변경 불가)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        db_table = "model_versions"  # 실제 DB 테이블명 명시
+        db_table = "model_versions"
 
     def __str__(self):
         return self.name
 
 
 class InferenceJob(models.Model):
-    """추론 요청 하나하나를 추적하는 테이블 (inference_jobs)"""
+    """
+    추론 요청 1건을 추적하는 핵심 테이블.
+    비동기 처리이므로 클라이언트가 상태를 폴링할 수 있도록 status를 DB에 저장한다.
+    Redis 큐는 워커에게 "처리해야 할 job_id"를 전달하는 임시 채널이고,
+    실제 상태의 단일 진실 공급원(single source of truth)은 이 테이블이다.
+    """
 
-    # Job 상태값 정의 (Spring의 enum과 동일, DB에는 문자열로 저장)
     class Status(models.TextChoices):
-        QUEUED = "QUEUED"           # Redis 큐에 들어간 상태
-        IN_PROGRESS = "IN_PROGRESS" # 워커가 처리 중인 상태
-        COMPLETED = "COMPLETED"     # 추론 성공
-        FAILED = "FAILED"           # 추론 실패 (재시도 초과)
+        QUEUED      = "QUEUED"       # 큐에 등록됨, 아직 워커가 꺼내지 않은 상태
+        IN_PROGRESS = "IN_PROGRESS"  # 워커가 꺼내서 추론 중
+        COMPLETED   = "COMPLETED"    # 추론 성공, InferenceResult에 결과 저장됨
+        FAILED      = "FAILED"       # 3회 재시도 후에도 실패, DLQ로 이동
 
-    # 어떤 모델 버전으로 추론할지 (FK, 모델 삭제 시 에러로 보호)
+    # on_delete=PROTECT: 모델이 삭제되면 에러 발생 — 실수로 모델 삭제 방지
     model = models.ForeignKey(
         ModelVersion, on_delete=models.PROTECT, related_name="jobs"
     )
-    # 현재 Job 상태, 기본값은 QUEUED
     status = models.CharField(
         max_length=20, choices=Status.choices, default=Status.QUEUED
     )
-    # 입력 이미지의 SHA256 해시 (중복 요청 감지용 캐시 키)
+    # SHA256 해시: 동일 이미지 재요청 시 Redis 캐시 조회 키로 사용
+    # db_index=True: input_sha256으로 단독 조회 시 빠른 검색
     input_sha256 = models.CharField(max_length=64, db_index=True)
-    # 생성·수정 시각 (updated_at은 상태 변경 시마다 자동 갱신)
     created_at = models.DateTimeField(auto_now_add=True)
+    # auto_now=True: save() 호출마다 자동 갱신 — stuck job 감지 기준 시각으로 활용
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         db_table = "inference_jobs"
         indexes = [
-            # (status, created_at) 복합 인덱스: 상태별 정렬 조회 최적화
+            # (status, created_at) 복합 인덱스를 추가한 이유:
+            # /v1/ops/metrics에서 "최근 5분간 COMPLETED job 수"처럼
+            # status 조건 + created_at 범위 필터를 동시에 쓰는 쿼리가 많다.
+            # status 단독 인덱스보다 복합 인덱스가 이런 쿼리에 더 효율적이다.
             models.Index(fields=["status", "created_at"], name="idx_status_created"),
         ]
 
@@ -54,17 +64,24 @@ class InferenceJob(models.Model):
 
 
 class InferenceResult(models.Model):
-    """추론 결과를 저장하는 테이블 (inference_results)"""
+    """
+    추론 결과를 저장하는 테이블. InferenceJob과 1:1 관계.
+    결과를 별도 테이블로 분리한 이유:
+      - Job 상태 조회(GET /v1/jobs/{id})와 결과 조회(GET /v1/jobs/{id}/result)를
+        다른 쿼리로 분리해 각각 최적화할 수 있다.
+      - inference_jobs 테이블에 JSON 컬럼을 추가하면 상태 폴링 쿼리에서
+        매번 큰 JSON을 읽어오는 오버헤드가 생기므로 별도 테이블이 낫다.
+    """
 
-    # job_id를 PK로 사용 (1 job = 1 result 구조 강제, Spring의 @OneToOne과 동일)
+    # job_id를 PK로 사용 = 1 Job에 1 Result만 존재 가능 (DB 수준에서 보장)
     job = models.OneToOneField(
         InferenceJob, on_delete=models.CASCADE, primary_key=True, related_name="result"
     )
-    # 18개 질환별 점수 전체를 JSON으로 저장 (e.g. {"Pneumonia": 0.87, ...})
+    # 18개 질환별 확률 점수 전체를 JSON으로 저장 (e.g. {"Pneumonia": 0.87, ...})
     output = models.JSONField()
-    # 가장 높은 점수를 받은 질환명 (검색·분석용 인덱스 적용)
+    # 가장 높은 점수의 질환명 — 별도 컬럼으로 추출해 인덱스 적용
+    # top_label로만 필터링하는 분석 쿼리를 JSON 파싱 없이 처리 가능
     top_label = models.CharField(max_length=100, db_index=True)
-    # 결과 생성 시각
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

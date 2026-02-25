@@ -5,6 +5,7 @@ views.py (ops)
       Spring의 @Actuator /metrics 엔드포인트와 동일한 개념.
 """
 
+import logging
 from datetime import timedelta
 
 import redis
@@ -13,6 +14,9 @@ from django.db.models import F, ExpressionWrapper, DurationField
 from django.utils import timezone
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework import status
+
+logger = logging.getLogger(__name__)
 
 from apps.jobs.models import InferenceJob, InferenceResult
 from workers.redis_queue import REDIS_URL, DLQ_KEY
@@ -56,7 +60,9 @@ class MetricsView(APIView):
         failure_rate = round(failed / total, 4) if total > 0 else 0.0
 
         # ── 레이턴시 계산 ─────────────────────────────────────────
-        # InferenceResult.created_at - InferenceJob.created_at = 추론 소요 시간
+        # 측정 범위: InferenceJob.created_at (API 수신) → InferenceResult.created_at (결과 저장)
+        # 즉, 큐 대기시간 + 배치 수집시간 + 추론시간을 모두 포함하는 end-to-end latency.
+        # 순수 추론 시간(~277ms)과 다르며, 부하 상황에서는 큐 대기로 수 초까지 증가 가능.
         # annotate(): SQL에서 컬럼 간 연산 결과를 새 필드로 추가
         # ExpressionWrapper: Django ORM에서 duration 타입 연산을 명시적으로 감쌈
         # F('job__created_at'): InferenceResult → InferenceJob FK 역참조
@@ -90,11 +96,52 @@ class MetricsView(APIView):
             "window_minutes": METRICS_WINDOW_MINUTES,  # 집계 기준 시간 윈도우
             "throughput_rps": throughput,               # 초당 성공 요청 수
             "failure_rate": failure_rate,               # 실패율 (0.0 ~ 1.0)
-            "latency_seconds": latency,                 # 추론 소요 시간 백분위수
+            # end_to_end_latency: API 수신~결과 저장까지의 전체 소요 시간
+            # 큐 대기 + 배치 수집 + 추론을 모두 포함 (순수 추론만이 아님)
+            "end_to_end_latency_seconds": latency,
             "total_requests": total,
             "success_requests": success,
             "failed_requests": failed,
         })
+
+
+class HealthView(APIView):
+    """
+    GET /v1/ops/health
+    DB + Redis 연결 상태를 확인하는 헬스체크 엔드포인트.
+    로드밸런서/컨테이너 오케스트레이터(K8s readinessProbe 등)가 인스턴스 상태 확인에 사용.
+    의존 서비스 중 하나라도 응답 불가 시 503 반환 → 트래픽 라우팅 제외.
+    """
+
+    def get(self, request):
+        # DB 연결 확인 — 간단한 쿼리로 MySQL 연결 가능 여부 테스트
+        try:
+            InferenceJob.objects.exists()
+            db_ok = True
+        except Exception:
+            logger.exception("DB health check failed")  # 장애 시 스택 트레이스 기록
+            db_ok = False
+
+        # Redis 연결 확인 — PING/PONG으로 큐 브로커 가용성 테스트
+        try:
+            r = redis.from_url(REDIS_URL)
+            r.ping()
+            redis_ok = True
+        except Exception:
+            logger.exception("Redis health check failed")  # 장애 시 스택 트레이스 기록
+            redis_ok = False
+
+        overall = "ok" if (db_ok and redis_ok) else "degraded"
+        http_status = status.HTTP_200_OK if overall == "ok" else status.HTTP_503_SERVICE_UNAVAILABLE
+
+        return Response(
+            {
+                "status": overall,
+                "db": "ok" if db_ok else "error",
+                "redis": "ok" if redis_ok else "error",
+            },
+            status=http_status,
+        )
 
 
 class DLQView(APIView):

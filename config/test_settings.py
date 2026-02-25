@@ -16,3 +16,13 @@ DATABASES = {
         "NAME": ":memory:",
     }
 }
+
+# Rate limiting: 테스트 환경에서는 사실상 무제한 설정
+# view.throttle_classes에 AnonRateThrottle이 직접 선언돼 DEFAULT_THROTTLE_CLASSES
+# 오버라이드로는 비활성화 불가 → rate를 매우 높게 설정해 테스트 반복 호출에 걸리지 않도록 함
+REST_FRAMEWORK = {
+    **REST_FRAMEWORK,  # noqa: F405 — 운영 설정 상속
+    "DEFAULT_THROTTLE_RATES": {
+        "anon": "10000/min",
+    },
+}

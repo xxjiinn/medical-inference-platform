@@ -16,10 +16,14 @@ from PIL import Image
 
 logger = logging.getLogger(__name__)
 
-# ONNX 모델 파일 경로 (convert_to_onnx.py로 생성한 파일)
-DEFAULT_ONNX_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "models", "densenet121.onnx"
+# ONNX 모델 파일 경로: 환경변수 ONNX_MODEL_PATH 우선, 없으면 프로젝트 루트 /models/densenet121.onnx
+# settings.py와 동일한 기본값 — 환경변수로 덮어쓰면 두 곳 모두 같은 경로를 바라봄
+DEFAULT_ONNX_PATH = os.getenv(
+    "ONNX_MODEL_PATH",
+    os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "models", "densenet121.onnx"
+    )
 )
 
 IMAGE_SIZE = 224

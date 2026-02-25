@@ -54,7 +54,7 @@ class ModelLoader:
         """
         logger.info(f"☑️ 모델 로딩 중: {MODEL_WEIGHTS} → device={self._device}")
 
-        # torchxrayvision이 HuggingFace Hub에서 가중치를 자동 다운로드+캐싱
+        # torchxrayvision이 HuggingFace Hub에서 가중치를 자동 다운로드 + 메모리에 캐싱
         self._model = xrv.models.DenseNet(weights=MODEL_WEIGHTS)
 
         # 모델을 지정 디바이스로 이동 (CPU/CUDA/MPS)

@@ -11,7 +11,7 @@ import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from workers.model_loader import get_loader
+from workers.model_loader import ModelLoader
 
 # ONNX 파일 저장 경로
 OUTPUT_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models", "densenet121.onnx")
@@ -22,7 +22,8 @@ def convert():
     os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
 
     print("[Convert] Loading PyTorch model...")
-    loader = get_loader()
+    # torch.compile 미적용 — torch.onnx.export는 compile된 모델과 충돌함
+    loader = ModelLoader(use_compile=False)
     loader.load()  # HuggingFace에서 모델 로드
 
     # ONNX 변환용 더미 입력 (실제 추론과 동일한 shape: 1×1×224×224)

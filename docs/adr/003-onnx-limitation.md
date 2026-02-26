@@ -17,7 +17,7 @@ Input shape:{11}, requested shape:{}
 ```
 
 에러 원인을 파악하기 위해 Netron(ONNX 모델 시각화 도구)으로 변환된 그래프를 직접 확인했다. 에러가 발생한 `Reshape_2` 노드를 클릭해 상위 노드를 따라가며 근본 원인을 확인했다.
-![Reshape_2 노드 분석](../images/onnx_reshape2_error.png)
+![Reshape_2 노드 분석](../docs/images/onnx_reshape2_error.png)
 
 ## 근본 원인
 

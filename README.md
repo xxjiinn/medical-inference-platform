@@ -21,28 +21,31 @@ workers 2개가 모두 추론 요청을 받으면 새 요청이 대기 상태로
 ### 시스템 아키텍처
 
 ```mermaid
-flowchart TD
+flowchart LR
     C["Client"]
 
     subgraph docker["EC2 t3.large — Docker Compose"]
         subgraph api_box["api container"]
-            G["Gunicorn  ·  --workers 2"]
+            G["Gunicorn · --workers 2"]
             DJ["Django REST Framework"]
             G -->|"WSGI"| DJ
         end
 
-        subgraph worker_box["worker container"]
-            W["Inference Worker  ·  multiprocessing × 2"]
+        subgraph store[""]
+            direction TB
+            R[("Redis")]
+            DB[("MySQL 8.0")]
         end
 
-        R[("Redis")]
-        DB[("MySQL 8.0")]
+        subgraph worker_box["worker container"]
+            W["Inference Worker<br/>multiprocessing × 2"]
+        end
     end
 
     C -->|"POST /v1/jobs"| G
     C -->|"GET /v1/jobs/{id}"| G
-    DJ -->|"LPUSH job_id"| R
-    DJ -->|"Job 생성 · 조회"| DB
+    DJ -->|"LPUSH"| R
+    DJ -->|"Job CRUD"| DB
     R -->|"BRPOP"| W
     W -->|"결과 저장"| DB
 ```

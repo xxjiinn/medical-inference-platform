@@ -58,10 +58,10 @@ Client: GET /v1/jobs/{id} 폴링으로 상태 확인
 
 **결과 (EC2 t3.large, 동시 10명 부하 테스트)**:
 
-| 시나리오 | p50 | p95 |
-|---------|-----|-----|
-| 첫 요청 (추론 발생) | 1,100ms | 2,800ms |
-| 동일 이미지 재요청 (캐시 히트) | 68ms | 230ms |
+| 시나리오                       | p50     | p95     |
+| ------------------------------ | ------- | ------- |
+| 첫 요청 (추론 발생)            | 1,100ms | 2,800ms |
+| 동일 이미지 재요청 (캐시 히트) | 68ms    | 230ms   |
 
 캐시 히트 시 **16배** 빠른 응답. 동시 20명에서는 캐시 미스 p50=6,000ms, 캐시 히트 p50=110ms(**54배 차이**).
 20명 기준 캐시 미스 latency가 급증하는 이유: 요청 유입 속도가 워커 처리 속도를 초과해 큐 대기가 누적됨.
@@ -81,6 +81,7 @@ Client: GET /v1/jobs/{id} 폴링으로 상태 확인
 30ms 대기는 그 약 11%(30÷277ms) 수준으로, latency를 크게 희생하지 않으면서 burst 요청을 묶을 수 있다.
 
 **CPU vs GPU에서의 효과 차이**:
+
 - CPU (현재 환경): 배치 latency가 선형 증가 (bs=1→272ms, bs=8→2,073ms).
   forward pass가 지배적이라 GPU와 달리 throughput 이득은 없다.
   실질 효과는 N개 job의 상태 전환(QUEUED→IN_PROGRESS)을 `filter().update()` 단일 쿼리로 처리하는 DB 오버헤드 절감.
@@ -122,14 +123,14 @@ ONNX는 정적 계산 그래프만 지원하므로 이 부분에서 변환이 �
 
 ## API
 
-| Method | Endpoint | 설명 |
-|--------|----------|------|
-| POST | `/v1/jobs` | X-ray 이미지 업로드, 추론 Job 생성 |
-| GET | `/v1/jobs/{id}` | Job 상태 조회 (QUEUED / IN_PROGRESS / COMPLETED / FAILED) |
-| GET | `/v1/jobs/{id}/result` | 추론 결과 (18개 병리 확률 + top_label) |
-| GET | `/v1/ops/metrics` | 최근 5분 처리량, 실패율, end-to-end latency (p50/p95/p99) |
-| GET | `/v1/ops/dlq` | 재시도 초과 후 최종 실패한 Job 목록 |
-| GET | `/v1/ops/health` | DB + Redis 연결 상태 확인 (로드밸런서용) |
+| Method | Endpoint               | 설명                                                      |
+| ------ | ---------------------- | --------------------------------------------------------- |
+| POST   | `/v1/jobs`             | X-ray 이미지 업로드, 추론 Job 생성                        |
+| GET    | `/v1/jobs/{id}`        | Job 상태 조회 (QUEUED / IN_PROGRESS / COMPLETED / FAILED) |
+| GET    | `/v1/jobs/{id}/result` | 추론 결과 (18개 병리 확률 + top_label)                    |
+| GET    | `/v1/ops/metrics`      | 최근 5분 처리량, 실패율, end-to-end latency (p50/p95/p99) |
+| GET    | `/v1/ops/dlq`          | 재시도 초과 후 최종 실패한 Job 목록                       |
+| GET    | `/v1/ops/health`       | DB + Redis 연결 상태 확인 (로드밸런서용)                  |
 
 ---
 
@@ -137,16 +138,16 @@ ONNX는 정적 계산 그래프만 지원하므로 이 부분에서 변환이 �
 
 **단일 추론** (50회 반복):
 
-| p50 | p95 | p99 |
-|-----|-----|-----|
+| p50   | p95   | p99   |
+| ----- | ----- | ----- |
 | 277ms | 304ms | 318ms |
 
 **부하 테스트** (Locust, 동시 10명):
 
-| 시나리오 | p50 | p95 | 실패율 |
-|---------|-----|-----|--------|
-| 캐시 미스 (첫 요청) | 1,100ms | 2,800ms | 0% |
-| 캐시 히트 (동일 이미지 재요청) | 68ms | 230ms | 0% |
+| 시나리오                       | p50     | p95     | 실패율 |
+| ------------------------------ | ------- | ------- | ------ |
+| 캐시 미스 (첫 요청)            | 1,100ms | 2,800ms | 0%     |
+| 캐시 히트 (동일 이미지 재요청) | 68ms    | 230ms   | 0%     |
 
 > `end_to_end_latency_seconds` (`/v1/ops/metrics` 응답값)는 API 수신부터
 > 결과 저장까지의 전체 시간으로, 큐 대기시간도 포함된다.
@@ -156,15 +157,15 @@ ONNX는 정적 계산 그래프만 지원하므로 이 부분에서 변환이 �
 
 ## 기술 스택
 
-| 역할 | 기술 | 선택 이유 |
-|------|------|-----------|
-| API 서버 | Django REST Framework | ORM + 시리얼라이저로 빠른 개발, Gunicorn과 표준 조합 |
-| 큐 | Redis LPUSH/BRPOP | Celery 없이 FIFO 큐 직접 구현 — 의존성 최소화 |
-| 추론 모델 | PyTorch + torchxrayvision DenseNet121 | Apache-2.0, 흉부 X-ray 특화, HuggingFace 자동 캐싱 |
-| DB | MySQL 8.0 | Job 상태·결과 영속성 보장, 복합 인덱스 지원 |
-| 인프라 | Docker Compose + AWS EC2 | 로컬과 서버 환경 동일하게 재현 가능 |
-| CI/CD | GitHub Actions | push → pytest → EC2 자동 배포 |
-| 테스트 | pytest-django (SQLite in-memory) | MySQL 없이 26개 단위 테스트 실행 |
+| 역할      | 기술                                  | 선택 이유                                            |
+| --------- | ------------------------------------- | ---------------------------------------------------- |
+| API 서버  | Django REST Framework                 | ORM + 시리얼라이저로 빠른 개발, Gunicorn과 표준 조합 |
+| 큐        | Redis LPUSH/BRPOP                     | Celery 없이 FIFO 큐 직접 구현 — 의존성 최소화        |
+| 추론 모델 | PyTorch + torchxrayvision DenseNet121 | Apache-2.0, 흉부 X-ray 특화, HuggingFace 자동 캐싱   |
+| DB        | MySQL 8.0                             | Job 상태·결과 영속성 보장, 복합 인덱스 지원          |
+| 인프라    | Docker Compose + AWS EC2              | 로컬과 서버 환경 동일하게 재현 가능                  |
+| CI/CD     | GitHub Actions                        | push → pytest → EC2 자동 배포                        |
+| 테스트    | pytest-django (SQLite in-memory)      | MySQL 없이 26개 단위 테스트 실행                     |
 
 ---
 

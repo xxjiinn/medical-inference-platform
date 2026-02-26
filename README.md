@@ -21,7 +21,7 @@ AI 모델을 API 서버에서 직접 호출하면 한 요청이 처리되는 동
 Client
   │
   ▼
-POST /v1/jobs  ←── Django REST API (Gunicorn)
+POST /v1/jobs  ←── Django REST API (Gunicorn)  → job_id 즉시 반환
   │                    │
   │              SHA256 캐시 확인 (Redis)
   │              ├─ 캐시 히트 → 즉시 반환 (재추론 없음)
@@ -36,6 +36,8 @@ Worker 프로세스 (multiprocessing)
   ├─ 30ms 배치 윈도우로 요청 수집
   ├─ DenseNet121 배치 추론
   └─ 결과 MySQL 저장 → Job COMPLETED
+                              ↑
+Client: GET /v1/jobs/{id} 폴링으로 상태 확인
 ```
 
 **API 서버와 워커를 분리한 이유**: PyTorch 추론은 CPU-bound 작업이라

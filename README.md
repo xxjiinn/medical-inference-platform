@@ -1,6 +1,7 @@
 # 흉부 X-ray AI 추론 서빙 시스템
 
 흉부 X-ray 이미지를 받아 18가지 병리(폐렴, 흉수, 기흉 등)의 확률을 반환하는 추론 API 서버.
+외부 병원에 X-ray 분석 기능을 API로 제공하는 **클라우드 AI 추론 SaaS** 구조로 설계했다.
 Gunicorn 기반 동기 WSGI 서버이며, 추론 요청은 Redis 큐를 통해 별도 워커 프로세스에서 처리된다.
 클라이언트는 요청 즉시 `job_id`를 받고 폴링으로 결과를 확인하는 **큐 기반 작업 분리 구조**다.
 
@@ -25,21 +26,21 @@ graph LR
 
     subgraph docker["Docker Compose  ·  EC2 t3.large"]
         subgraph api_box["api container"]
-            API["Django REST API\nGunicorn × 2 workers"]
+            API["Django REST API<br/>Gunicorn --workers 2"]
         end
 
         subgraph worker_box["worker container"]
-            W["Inference Worker\nmultiprocessing × 2"]
+            W["Inference Worker<br/>multiprocessing × 2"]
         end
 
-        R[("Redis\nQueue  ·  SHA256 Cache")]
-        DB[("MySQL 8.0\nJobs  ·  Results")]
+        R[("Redis<br/>Queue · Dedup Cache")]
+        DB[("MySQL 8.0<br/>Jobs · Results")]
     end
 
     C -- "POST /v1/jobs" --> API
     API -- "job_id 즉시 반환" --> C
-    API -- "LPUSH / SHA256 캐시" --> R
-    W -- "BRPOP" --> R
+    API -- "LPUSH / SHA256 dedup" --> R
+    R -- "BRPOP" --> W
     API -- "Job CRUD" --> DB
     W -- "결과 저장" --> DB
     C -- "GET /v1/jobs/{id} 폴링" --> API
@@ -55,17 +56,17 @@ sequenceDiagram
     participant W as Inference Worker
     participant DB as MySQL
 
-    C->>+API: POST /v1/jobs (X-ray image)
-    API->>R: SHA256 캐시 확인
+    C->>API: POST /v1/jobs (X-ray image)
+    API->>R: SHA256 dedup 확인
 
     alt 캐시 히트 (동일 이미지)
         R-->>API: job_id
-        API-->>-C: 기존 결과 즉시 반환 (재추론 없음)
+        API-->>C: 기존 job_id 반환 (재추론 없음)
     else 캐시 미스
         API->>DB: Job 생성 (QUEUED)
         API->>R: LPUSH job_id
         API->>R: SHA256 캐시 저장
-        API-->>-C: job_id 즉시 반환
+        API-->>C: job_id 즉시 반환
 
         W->>R: BRPOP (대기)
         R-->>W: job_id
@@ -92,8 +93,8 @@ sequenceDiagram
 
 ### 1. 같은 이미지가 반복 요청될 때 매번 추론해야 하나?
 
-**문제**: 병원 PACS 시스템에서는 같은 환자 X-ray를 여러 의사가 동시에 조회할 수 있다.
-매번 277ms를 쓰는 건 비효율적이다.
+**문제**: SaaS 환경에서는 클라이언트의 재전송, 네트워크 재시도, 동일 이미지의 반복 업로드 등으로
+같은 이미지가 중복 요청될 수 있다. 매번 277ms짜리 추론을 실행하는 건 불필요한 리소스 낭비다.
 
 **해결**: 이미지 bytes의 SHA256 해시를 Redis 캐시 키로 사용.
 동일 이미지의 두 번째 요청부터는 추론 없이 기존 결과를 바로 반환한다.
@@ -143,7 +144,7 @@ ONNX는 정적 계산 그래프만 지원하므로 이 부분에서 변환이 �
 
 `onnx` 라이브러리로 계산 그래프를 직접 분석해 `Reshape_2` 노드에서
 `Input shape:{11}, requested shape:{}` 불일치가 근본 원인임을 확인했다
-(batch=1 기준; NonZero가 dummy input에서 0개, 실제 추론 시 11개를 반환해 shape 불일치 발생).
+(batch=1 기준; NonZero가 export 시 dummy input에서 0개, 실제 이미지 추론 시 11개를 반환해 shape 불일치 발생).
 
 **결론**: ONNX 변환 자체는 성공하지만 실제 추론 시 위 에러가 발생해 적용 불가. 이는 모델 아키텍처의 근본적인 제약으로, 단일 데이터셋 모델로 교체하지 않는 한 우회 방법이 없다.
 
@@ -201,8 +202,8 @@ ONNX는 정적 계산 그래프만 지원하므로 이 부분에서 변환이 �
 
 | 역할      | 기술                                  | 선택 이유                                            |
 | --------- | ------------------------------------- | ---------------------------------------------------- |
-| API 서버  | Django REST Framework                 | ORM + 시리얼라이저로 빠른 개발, Gunicorn과 표준 조합 |
-| 큐        | Redis LPUSH/BRPOP                     | Celery 없이 FIFO 큐 직접 구현 — 의존성 최소화        |
+| API 서버  | Django REST Framework + Gunicorn      | ORM + 시리얼라이저로 빠른 개발; Gunicorn `--workers 2` (vCPU 2개, 추론 워커와 리소스 공유 고려) |
+| 큐        | Redis LPUSH/BRPOP                     | 큐·워커 흐름을 직접 구현하여 내부 동작 학습, 단일 태스크 구조에서 Celery 의존성 불필요 |
 | 추론 모델 | PyTorch + torchxrayvision DenseNet121 | Apache-2.0, 흉부 X-ray 특화, HuggingFace 자동 캐싱   |
 | DB        | MySQL 8.0                             | Job 상태·결과 영속성 보장, 복합 인덱스 지원          |
 | 인프라    | Docker Compose + AWS EC2              | 로컬과 서버 환경 동일하게 재현 가능                  |

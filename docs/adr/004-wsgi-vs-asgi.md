@@ -1,8 +1,5 @@
 # ADR-004: 프로덕션 서버 — WSGI(Gunicorn) vs ASGI(Uvicorn)
 
-- **상태**: 결정됨
-- **날짜**: 2026-02
-
 ## 배경
 
 Django의 개발용 `runserver`는 단일 스레드로 동작하며 프로덕션 환경에 적합하지 않다. 프로덕션 WSGI/ASGI 서버 선택이 필요했다.

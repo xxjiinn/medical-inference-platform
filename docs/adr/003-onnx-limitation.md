@@ -1,8 +1,5 @@
 # ADR-003: ONNX Runtime 최적화 시도 및 적용 불가 판정
 
-- **상태**: 검토 후 기각
-- **날짜**: 2026-02
-
 ## 배경
 
 PyTorch 추론 속도 개선을 위해 ONNX Runtime 적용을 시도했다. ONNX Runtime은 CPU 환경에서 PyTorch 대비 1.5~2x 속도 향상이 보고된 경우가 있어 검토 대상이 됐다.
@@ -17,6 +14,7 @@ Input shape:{11}, requested shape:{}
 ```
 
 에러 원인을 파악하기 위해 Netron(ONNX 모델 시각화 도구)으로 변환된 그래프를 직접 확인했다.
+
 에러가 발생한 `Reshape_2` 노드를 클릭해 상위 노드를 따라가며 근본 원인을 확인했다.
 
 <img src="../image/onnx_reshape2_error.png" alt="Reshape_2 노드 분석" width="450" style="display: block;">

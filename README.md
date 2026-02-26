@@ -6,7 +6,7 @@ Gunicorn 기반 동기 WSGI 서버이며, 추론 요청은 Redis 큐를 통해 �
 
 ---
 
-## 왜 이 프로젝트를 만들었나
+## 프로젝트 배경
 
 AI 모델을 API 서버에서 직접 호출하면 한 요청이 처리되는 동안 서버가 응답 불가 상태가 된다.
 흉부 X-ray 추론은 CPU 기준 약 277ms가 걸린다. 동시 요청이 10개면 마지막 요청은
@@ -17,31 +17,73 @@ AI 모델을 API 서버에서 직접 호출하면 한 요청이 처리되는 동
 
 ## 아키텍처
 
+### 컴포넌트 구성
+
+```mermaid
+graph LR
+    C[Client]
+
+    subgraph docker["Docker Compose  ·  EC2 t3.large"]
+        subgraph api_box["api container"]
+            API["Django REST API\nGunicorn × 2 workers"]
+        end
+
+        subgraph worker_box["worker container"]
+            W["Inference Worker\nmultiprocessing × 2"]
+        end
+
+        R[("Redis\nQueue  ·  SHA256 Cache")]
+        DB[("MySQL 8.0\nJobs  ·  Results")]
+    end
+
+    C -- "POST /v1/jobs" --> API
+    API -- "job_id 즉시 반환" --> C
+    API -- "LPUSH / SHA256 캐시" --> R
+    W -- "BRPOP" --> R
+    API -- "Job CRUD" --> DB
+    W -- "결과 저장" --> DB
+    C -- "GET /v1/jobs/{id} 폴링" --> API
 ```
-Client
-  │
-  ▼
-POST /v1/jobs  ←── Django REST API (Gunicorn)  → job_id 즉시 반환
-  │                    │
-  │              SHA256 캐시 확인 (Redis)
-  │              ├─ 캐시 히트 → 즉시 반환 (재추론 없음)
-  │              └─ 캐시 미스 → DB에 Job 생성
-  │
-  ▼
-Redis 큐 (LPUSH)
-  │
-  ▼
-Worker 프로세스 (multiprocessing)
-  │
-  ├─ 30ms 배치 윈도우로 요청 수집
-  ├─ DenseNet121 배치 추론
-  └─ 결과 MySQL 저장 → Job COMPLETED
-                              ↑
-Client: GET /v1/jobs/{id} 폴링으로 상태 확인
+
+### 요청 흐름
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant API as Django API
+    participant R as Redis
+    participant W as Inference Worker
+    participant DB as MySQL
+
+    C->>+API: POST /v1/jobs (X-ray image)
+    API->>R: SHA256 캐시 확인
+
+    alt 캐시 히트 (동일 이미지)
+        R-->>API: job_id
+        API-->>-C: 기존 결과 즉시 반환 (재추론 없음)
+    else 캐시 미스
+        API->>DB: Job 생성 (QUEUED)
+        API->>R: LPUSH job_id
+        API->>R: SHA256 캐시 저장
+        API-->>-C: job_id 즉시 반환
+
+        W->>R: BRPOP (대기)
+        R-->>W: job_id
+        W->>DB: 상태 → IN_PROGRESS
+        W->>W: DenseNet121 배치 추론 (p50 277ms)
+        W->>DB: 결과 저장, 상태 → COMPLETED
+    end
+
+    loop 폴링
+        C->>API: GET /v1/jobs/{id}
+        API->>DB: 상태 조회
+        DB-->>API: COMPLETED
+        API-->>C: 추론 결과 반환
+    end
 ```
 
 **API 서버와 워커를 분리한 이유**: PyTorch 추론은 CPU-bound 작업이라
-같은 프로세스에서 실행하면 GIL로 인해 다른 요청을 처리할 수 없다.
+같은 프로세스에서 실행하면 다른 요청을 처리할 수 없다.
 별도 프로세스로 분리해 API 서버가 요청 수신에만 집중하게 했다.
 
 ---

@@ -82,3 +82,26 @@ API 레이어(job 제출)는 20명 부하에서도 p50=92ms로 안정적. 병목
 | GPU 인스턴스 (g4dn.xlarge) | 10~20x throughput 향상 | NVIDIA T4, GPU batching 효과 발생 |
 | 수평 확장 (EC2 다중 인스턴스 + LB) | worker 수에 비례한 처리량 증가 | Redis queue 공유 구조로 바로 적용 가능 |
 | ONNX Runtime | 해당 모델 적용 불가 | [ADR-003](adr/003-onnx-limitation.md) 참고 |
+
+---
+
+## 실제 X-ray 출력 검증 (NIH ChestX-ray14 샘플)
+
+NIH ChestX-ray14 공개 데이터셋 샘플(`00000001_000.png`, 182,547 bytes)로
+serving 파이프라인 전체(preprocess → predict)를 검증. EC2 t3.large에서 실행.
+
+전처리 결과: tensor shape `(1, 1, 224, 224)`, range `[-1024.0, 931.3]`
+(torchxrayvision 정규화 규격 `[-1024, 1024]` 준수 확인)
+
+| 순위 | 병리 | 점수 |
+|------|------|------|
+| 1 | Cardiomegaly | 0.6215 |
+| 2 | Fibrosis | 0.5402 |
+| 3 | Infiltration | 0.5220 |
+| 4 | Pleural_Thickening | 0.5104 |
+| 5 | Nodule | 0.5092 |
+
+**top_label: Cardiomegaly (0.6215)** — NIH 데이터셋 실제 레이블과 일치.
+
+Multi-label 모델 특성상 여러 병리에 동시에 유의미한 점수가 출력되며, 이는 정상 동작이다.
+단일 이미지 1회 추론(워밍업 없음)이므로 latency는 benchmark.py 결과(p50=277ms)를 기준으로 한다.

@@ -82,9 +82,33 @@ class JobCreateView(APIView):
         # 3. Redis 캐시에서 동일 이미지의 기존 job_id 조회 (중복 요청 처리)
         cached_job_id = get_cache(sha256)
         if cached_job_id:
-            # 캐시 히트: DB에서 기존 Job을 찾아 바로 반환 (재추론 생략)
             job = get_object_or_404(InferenceJob, pk=cached_job_id)
+            # 캐시 히트 + COMPLETED: 결과를 즉시 반환 (폴링 불필요)
+            if job.status == InferenceJob.Status.COMPLETED:
+                result = get_object_or_404(InferenceResult, job=job)
+                serializer = InferenceResultSerializer(result)
+                return Response(serializer.data, status=status.HTTP_200_OK)
+            # QUEUED / IN_PROGRESS: job_id 반환, 클라이언트가 폴링으로 확인
             serializer = JobCreateResponseSerializer(job)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+
+        # DB fallback: Redis TTL 만료 등으로 캐시가 사라진 경우
+        # FAILED를 제외한 기존 job이 DB에 있으면 재추론 없이 반환
+        existing_job = (
+            InferenceJob.objects.filter(input_sha256=sha256)
+            .exclude(status=InferenceJob.Status.FAILED)
+            .order_by("-created_at")
+            .first()
+        )
+        if existing_job:
+            set_cache(sha256, existing_job.id)  # 캐시 갱신 (다음 요청은 캐시 히트)
+            if existing_job.status == InferenceJob.Status.COMPLETED:
+                result = get_object_or_404(InferenceResult, job=existing_job)
+                serializer = InferenceResultSerializer(result)
+                return Response(serializer.data, status=status.HTTP_200_OK)
+            # QUEUED / IN_PROGRESS: 이미지가 Redis에서 만료됐을 수 있으므로 재저장
+            store_image(sha256, image_bytes)
+            serializer = JobCreateResponseSerializer(existing_job)
             return Response(serializer.data, status=status.HTTP_200_OK)
 
         # [known limitation] TOCTOU race condition

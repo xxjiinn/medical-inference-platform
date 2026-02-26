@@ -56,13 +56,19 @@ def test_create_job_no_image(api_client, model_version):
 def test_create_job_duplicate_returns_cached(api_client, sample_image_bytes, model_version):
     """
     동일 이미지 재요청 시 Redis 캐시에서 기존 job을 반환하는지 검증.
-    (재추론 없이 200 반환)
+    COMPLETED 상태면 재추론 없이 결과를 즉시 반환.
     """
     # 기존에 처리된 job 생성
     existing_job = InferenceJob.objects.create(
         model=model_version,
         status=InferenceJob.Status.COMPLETED,
         input_sha256="abc123",
+    )
+    # COMPLETED job의 추론 결과도 생성 (캐시 히트 시 즉시 반환 대상)
+    InferenceResult.objects.create(
+        job=existing_job,
+        output={"Cardiomegaly": 0.5},
+        top_label="Cardiomegaly",
     )
 
     image = io.BytesIO(sample_image_bytes)
@@ -76,9 +82,10 @@ def test_create_job_duplicate_returns_cached(api_client, sample_image_bytes, mod
             format="multipart",
         )
 
-    # 새 job 생성 없이 기존 job 정보 반환
+    # COMPLETED → 재추론 없이 결과 즉시 반환
     assert response.status_code == 200
-    assert response.data["id"] == existing_job.id
+    assert response.data["job_id"] == existing_job.id
+    assert response.data["top_label"] == "Cardiomegaly"
 
 
 @pytest.mark.django_db

@@ -31,11 +31,8 @@ flowchart LR
             G -->|"WSGI"| DJ
         end
 
-        subgraph store[""]
-            direction TB
-            R[("Redis")]
-            DB[("MySQL 8.0")]
-        end
+        R[("Redis")]
+        DB[("MySQL 8.0")]
 
         subgraph worker_box["worker container"]
             W["Inference Worker<br/>multiprocessing × 2"]
@@ -262,3 +259,45 @@ Job이 `IN_PROGRESS` 상태로 영원히 남는다.
 - **Rate limiting 정확도**: DRF의 `AnonRateThrottle`은 Gunicorn worker 프로세스별로 독립된 메모리를 사용한다. Worker 수가 늘면 실질적인 제한이 느슨해진다. Redis 기반 캐시 백엔드로 전환하면 해결된다.
 - **SHA256 캐시 한계**: Redis TTL(10분) 만료 후 동일 이미지 재요청 시 DB에 기존 결과가 있어도 재추론이 발생한다. DB 직접 조회(`filter(input_sha256=sha256)`)로 대체하는 것이 더 단순하고 정확한 설계다.
 - **중복 요청 race condition**: SHA256 캐시 미스 직후 동시 요청이 오면 드물게 중복 Job이 생길 수 있다. DB unique constraint + `get_or_create`가 더 정확한 해결책이다.
+
+---
+
+<!-- TODO: 스크린샷 후 삭제 -->
+
+## 전사 통합 상품 관리 플랫폼 — 시스템 아키텍처
+
+```mermaid
+flowchart TB
+    CLIENT["Client<br/>(내부 운영자)"]
+
+    subgraph src["데이터 소스 (4채널)"]
+        SRC["Excel 업로드 · API × 3"]
+    end
+
+    subgraph vpc["AWS VPC"]
+        subgraph api["api container · EC2 t3.medium"]
+            SB["Spring Boot<br/>(Docker)"]
+        end
+
+        REDIS[("Redis<br/>Cache-Aside")]
+        RDS[("RDS MySQL<br/>복합 인덱스")]
+
+        subgraph crawl["crawl container · EC2 t3.xlarge"]
+            SEL["Selenium Crawler"]
+        end
+    end
+
+    subgraph auto["비용 최적화 — 월 65% 절감"]
+        EB["EventBridge<br/>(Cron)"] -->|"Trigger"| LAM["Lambda<br/>(boto3)"]
+    end
+
+    GH["GitHub · Docker"] -->|"배포"| SB
+
+    CLIENT -->|"조회 / 관리"| SB
+    src --> SB
+    SB -->|"@Cacheable"| REDIS
+    REDIS -.->|"Cache Miss"| RDS
+    SB -->|"JPA"| RDS
+    LAM -->|"Start/Stop"| SEL
+    SEL -->|"데이터 저장"| RDS
+```

@@ -47,34 +47,6 @@ flowchart LR
     W -->|"결과 저장"| DB
 ```
 
-### 컴포넌트 구성
-
-```mermaid
-graph LR
-    C[Client]
-
-    subgraph docker["Docker Compose  ·  EC2 t3.large"]
-        subgraph api_box["api container"]
-            API["Django REST API<br/>Gunicorn --workers 2"]
-        end
-
-        subgraph worker_box["worker container"]
-            W["Inference Worker<br/>multiprocessing × 2"]
-        end
-
-        R[("Redis<br/>Queue · Dedup Cache")]
-        DB[("MySQL 8.0<br/>Jobs · Results")]
-    end
-
-    C -- "POST /v1/jobs" --> API
-    API -- "job_id 즉시 반환" --> C
-    API -- "LPUSH / SHA256 dedup" --> R
-    R -- "BRPOP" --> W
-    API -- "Job CRUD" --> DB
-    W -- "결과 저장" --> DB
-    C -- "GET /v1/jobs/{id} 폴링" --> API
-```
-
 ### 요청 흐름
 
 ```mermaid
@@ -86,11 +58,17 @@ sequenceDiagram
     participant DB as MySQL
 
     C->>API: POST /v1/jobs (X-ray image)
-    API->>R: SHA256 dedup 확인
+    API->>R: SHA256 캐시 조회
 
     alt 캐시 히트 (동일 이미지)
         R-->>API: job_id
-        API-->>C: 기존 job_id 반환 (재추론 없음)
+        API->>DB: 상태 조회
+        alt COMPLETED
+            DB-->>API: InferenceResult
+            API-->>C: 추론 결과 즉시 반환
+        else QUEUED / IN_PROGRESS
+            API-->>C: job_id 반환 (폴링으로 확인)
+        end
     else 캐시 미스
         API->>DB: Job 생성 (QUEUED)
         API->>R: LPUSH job_id
@@ -137,9 +115,9 @@ sequenceDiagram
 
 캐시 히트 시 **16배** 빠른 응답. 동시 20명에서는 캐시 미스 p50=6,000ms, 캐시 히트 p50=110ms(**54배 차이**).
 
-**한계**: Redis TTL(10분) 만료 후 동일 이미지 재요청 시 DB에 기존 결과가 있어도 재추론이 발생한다.
-cache miss 시 `InferenceJob.objects.filter(input_sha256=sha256)` DB 조회를 fallback으로 추가하거나,
-Redis 캐싱을 제거하고 DB 직접 조회로 단순화하는 것이 더 정확한 설계다.
+**추가 구현**: Redis TTL(10분) 만료 후에도 DB fallback(`filter(input_sha256=sha256)`)으로 기존 결과를 재사용한다.
+FAILED 상태 Job은 제외하고, 재사용 가능한 Job이 있으면 Redis 캐시도 갱신한다.
+남은 한계: SHA256 캐시 미스 직후 동시 요청 시 드물게 중복 Job 생성 가능 (DB unique constraint + `get_or_create`가 근본 해결책).
 
 ---
 
@@ -173,7 +151,7 @@ Redis 캐싱을 제거하고 DB 직접 조회로 단순화하는 것이 더 정�
 이 연산의 출력 크기가 입력 데이터에 따라 달라진다(data-dependent output shape).
 ONNX는 정적 계산 그래프만 지원하므로 이 부분에서 변환이 실패한다.
 
-`onnx` 라이브러리로 계산 그래프를 직접 분석해 `Reshape_2` 노드에서
+Netron으로 계산 그래프를 시각화 분석해 `Reshape_2` 노드에서
 `Input shape:{11}, requested shape:{}` 불일치가 근본 원인임을 확인했다
 (batch=1 기준; NonZero가 export 시 dummy input에서 0개, 실제 이미지 추론 시 11개를 반환해 shape 불일치 발생).
 
@@ -189,11 +167,13 @@ ONNX는 정적 계산 그래프만 지원하므로 이 부분에서 변환이 �
 Job이 `IN_PROGRESS` 상태로 영원히 남는다.
 
 **해결**: Manager 프로세스가 10분마다 `_recover_stuck_jobs()`를 실행.
+
 - 10분 이상 `IN_PROGRESS`인 Job → `QUEUED`로 되돌리고 재큐잉
 - 5분 이상 `QUEUED`인 Job → enqueue 유실로 판단, 재큐잉
   (정상 처리는 수초 이내 — 5분 경과는 enqueue 누락으로 판단)
 
 **재시도 및 DLQ**:
+
 - Redis `INCR`으로 재시도 횟수 관리 (`retry:{job_id}`, TTL 1시간)
 - 3회 재시도 초과 시 `FAILED` 처리 후 Dead Letter Queue에 보관 (`/v1/ops/dlq`로 운영자 확인)
 
@@ -239,15 +219,15 @@ Job이 `IN_PROGRESS` 상태로 영원히 남는다.
 
 ## 기술 스택
 
-| 역할      | 기술                                  | 선택 이유                                                                                     |
-| --------- | ------------------------------------- | --------------------------------------------------------------------------------------------- |
-| API 서버  | Django REST Framework + Gunicorn      | ORM + 시리얼라이저로 빠른 개발; Gunicorn `--workers 2` (vCPU 2개, 추론 워커와 리소스 공유 고려) |
-| 큐        | Redis LPUSH/BRPOP                     | 단일 태스크(X-ray 추론) 구조에서 Celery의 태스크 라우팅·직렬화 레이어가 불필요하다고 판단. 큐·워커 흐름을 직접 구현하며 내부 동작 학습 (실무에서는 Celery 사용 권장) |
-| 추론 모델 | PyTorch + torchxrayvision DenseNet121 | Apache-2.0, 흉부 X-ray 특화, HuggingFace 자동 캐싱                                            |
-| DB        | MySQL 8.0                             | Job 상태·결과 영속성 보장, 복합 인덱스 지원                                                   |
-| 인프라    | Docker Compose + AWS EC2              | 로컬과 서버 환경 동일하게 재현 가능                                                           |
-| CI/CD     | GitHub Actions                        | push → pytest → EC2 자동 배포                                                                 |
-| 테스트    | pytest-django (SQLite in-memory)      | MySQL 없이 26개 단위 테스트 실행                                                               |
+| 역할      | 기술                                  | 선택 이유                                                                                                                                                            |
+| --------- | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| API 서버  | Django REST Framework + Gunicorn      | ORM + 시리얼라이저로 빠른 개발; Gunicorn `--workers 2` (vCPU 2개, 추론 워커와 리소스 공유 고려)                                                                      |
+| 큐        | Redis LPUSH/BRPOP                     | 메시지 큐 핵심 동작 원리 학습 목적으로 Redis LPUSH/BRPOP 직접 구현. Celery의 retry·DLQ 등 안정성 기능을 직접 재구현하며 내부 구조 체득. (실무에서는 Celery 사용 권장) |
+| 추론 모델 | PyTorch + torchxrayvision DenseNet121 | Apache-2.0, 흉부 X-ray 특화, HuggingFace 자동 캐싱                                                                                                                   |
+| DB        | MySQL 8.0                             | Job 상태·결과 영속성 보장, 복합 인덱스 지원                                                                                                                          |
+| 인프라    | Docker Compose + AWS EC2              | 로컬과 서버 환경 동일하게 재현 가능                                                                                                                                  |
+| CI/CD     | GitHub Actions                        | push → pytest → EC2 자동 배포                                                                                                                                        |
+| 테스트    | pytest-django (SQLite in-memory)      | MySQL 없이 26개 단위 테스트 실행                                                                                                                                     |
 
 ---
 
@@ -257,47 +237,5 @@ Job이 `IN_PROGRESS` 상태로 영원히 남는다.
 
 - **인증/인가 없음**: 현재 누구나 API를 호출할 수 있다. 실서비스라면 API Key 또는 JWT를 붙여야 한다.
 - **Rate limiting 정확도**: DRF의 `AnonRateThrottle`은 Gunicorn worker 프로세스별로 독립된 메모리를 사용한다. Worker 수가 늘면 실질적인 제한이 느슨해진다. Redis 기반 캐시 백엔드로 전환하면 해결된다.
-- **SHA256 캐시 한계**: Redis TTL(10분) 만료 후 동일 이미지 재요청 시 DB에 기존 결과가 있어도 재추론이 발생한다. DB 직접 조회(`filter(input_sha256=sha256)`)로 대체하는 것이 더 단순하고 정확한 설계다.
 - **중복 요청 race condition**: SHA256 캐시 미스 직후 동시 요청이 오면 드물게 중복 Job이 생길 수 있다. DB unique constraint + `get_or_create`가 더 정확한 해결책이다.
 
----
-
-<!-- TODO: 스크린샷 후 삭제 -->
-
-## 전사 통합 상품 관리 플랫폼 — 시스템 아키텍처
-
-```mermaid
-flowchart TB
-    CLIENT["Client<br/>(내부 운영자)"]
-
-    subgraph src["데이터 소스 (4채널)"]
-        SRC["Excel 업로드 · API × 3"]
-    end
-
-    subgraph vpc["AWS VPC"]
-        subgraph api["api container · EC2 t3.medium"]
-            SB["Spring Boot<br/>(Docker)"]
-        end
-
-        REDIS[("Redis<br/>Cache-Aside")]
-        RDS[("RDS MySQL<br/>복합 인덱스")]
-
-        subgraph crawl["crawl container · EC2 t3.xlarge"]
-            SEL["Selenium Crawler"]
-        end
-    end
-
-    subgraph auto["비용 최적화 — 월 65% 절감"]
-        EB["EventBridge<br/>(Cron)"] -->|"Trigger"| LAM["Lambda<br/>(boto3)"]
-    end
-
-    GH["GitHub · Docker"] -->|"배포"| SB
-
-    CLIENT -->|"조회 / 관리"| SB
-    src --> SB
-    SB -->|"@Cacheable"| REDIS
-    REDIS -.->|"Cache Miss"| RDS
-    SB -->|"JPA"| RDS
-    LAM -->|"Start/Stop"| SEL
-    SEL -->|"데이터 저장"| RDS
-```

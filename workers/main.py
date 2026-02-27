@@ -179,7 +179,7 @@ def run_manager():
                 p.close()  # 죽은 프로세스 리소스 해제
                 processes[i] = start_worker_process()
 
-        # 10분마다 IN_PROGRESS stuck job 복구 실행
+        # 10분마다 stuck job 복구 실행 (IN_PROGRESS 10분↑ + QUEUED 5분↑)
         if time.monotonic() - _last_recovery >= RECOVERY_INTERVAL:
             _recover_stuck_jobs()
             _last_recovery = time.monotonic()

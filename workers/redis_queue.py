@@ -1,5 +1,5 @@
 """
-queue.py
+redis_queue.py
 역할: Redis 큐와 캐시 조작을 담당하는 헬퍼 모듈.
       API 서버(enqueue/store_image/set_cache)와 워커(collect_batch/fetch_image) 양쪽에서 공유.
       Spring의 @Component 유틸리티 빈과 동일한 개념.

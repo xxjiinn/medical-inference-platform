@@ -229,13 +229,3 @@ Job이 `IN_PROGRESS` 상태로 영원히 남는다.
 | CI/CD     | GitHub Actions                        | push → pytest → EC2 자동 배포                                                                                                                                        |
 | 테스트    | pytest-django (SQLite in-memory)      | MySQL 없이 26개 단위 테스트 실행                                                                                                                                     |
 
----
-
-## 현재 한계 및 개선 방향
-
-의도적으로 범위 밖에 둔 것과 다음 단계로 개선 가능한 것들:
-
-- **인증/인가 없음**: 현재 누구나 API를 호출할 수 있다. 실서비스라면 API Key 또는 JWT를 붙여야 한다.
-- **Rate limiting 정확도**: DRF의 `AnonRateThrottle`은 Gunicorn worker 프로세스별로 독립된 메모리를 사용한다. Worker 수가 늘면 실질적인 제한이 느슨해진다. Redis 기반 캐시 백엔드로 전환하면 해결된다.
-- **중복 요청 race condition**: SHA256 캐시 미스 직후 동시 요청이 오면 드물게 중복 Job이 생길 수 있다. DB unique constraint + `get_or_create`가 더 정확한 해결책이다.
-
